@@ -1,0 +1,7 @@
+Metric	Question it answers
+p50 latency	How fast is the typical request?
+p99 latency	How bad is it for the unlucky 1%?
+₹ per hour	What does the cross-zone traffic cost?
+SLO-miss minutes	How often did we break the latency promise?
+% local	How much traffic stayed in its own zone?
+Gap closed	How much of the possible improvement over AWS did we capture? (0 = same as AWS, 1 = perfect)

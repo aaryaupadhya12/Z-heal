@@ -1,0 +1,18 @@
+function aws_rule(client_hosts, healthy_server_hosts, zones):
+
+    if total healthy servers < 2 × number of zones:
+        send traffic to every zone in proportion to its servers   (round-robin)
+
+    for each zone z:
+        d[z] = client hosts in z  / all client hosts
+        u[z] = healthy servers in z / all healthy servers
+
+    for each zone k:
+        spare[k] = max(0, u[k] − d[k])
+
+    for each zone z:
+        if u[z] ≥ d[z]:
+            keep 100% of z's traffic local
+        else:
+            keep  u[z] / d[z]  local
+            send the rest to other zones, split by their spare[k]
