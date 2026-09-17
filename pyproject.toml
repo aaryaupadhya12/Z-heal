@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zoneheal"
+version = "0.0.0"
+description = "ZoneHeal RL harness package"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["zoneheal", "zoneheal.core", "zoneheal.heal", "zoneheal.envs", "zoneheal.agents"]
