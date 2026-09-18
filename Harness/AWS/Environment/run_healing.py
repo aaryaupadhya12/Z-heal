@@ -12,12 +12,13 @@ from zoneheal.heal.controller import PIDBetaController, StaticBeta, natural_kl_t
 from .Healing_zone import ZoneEnv, load_Arrays, decode
 from ..fixed import TABLE_PATH, N_STATES, ACTIONS
 
-FAULT_AT   = 200          # iteration when the brownout starts
-ITERS      = 400
+FAULT_AT   = 60    # iteration when the brownout starts
+ITERS      = 120
 BATCH      = 8            # episodes per iteration
 EPISODE_MIN = 60          # minutes per episode
 FAULT_ZONE = 1            # index 1 = cluster 2 (the busiest)
 SEVERITY   = 1.0
+TRAIN_START = 16183 
 
 
 def bucket_of(state):
@@ -29,6 +30,7 @@ def calibrate(data, seed=0, iters=50):
     """How far does the policy move per iteration with no penalty?
     The KL target is set from that."""
     env = ZoneEnv(data, split="train", seed=seed, episode_min=EPISODE_MIN)
+    env.fixed_start = TRAIN_START
     pol = TabularSoftmaxPolicy(env.n_states, env.n_actions, seed=seed + 1)
     tr = Trainer(env, pol, AdaptiveBuckets(bucket_of), StaticBeta(0.0),
                  gamma=0.0, batch=BATCH, heal=False)
@@ -90,6 +92,7 @@ def summarise_healing(rows, events, fault_at=FAULT_AT, window=25):
 
 def run(data, heal, seed, kl_target):
     env = ZoneEnv(data, split="train", seed=seed, episode_min=EPISODE_MIN)
+    env.fixed_start = TRAIN_START
     pol = TabularSoftmaxPolicy(env.n_states, env.n_actions, seed=seed + 1)
     ctrl = PIDBetaController(kl_target0=kl_target, heal=heal)
     tr = Trainer(env, pol, AdaptiveBuckets(bucket_of), ctrl,
@@ -98,7 +101,8 @@ def run(data, heal, seed, kl_target):
     rows = []
     for it in range(ITERS):
         if it == FAULT_AT:
-            env.set_fault("brownout", zone=FAULT_ZONE, severity=SEVERITY)
+            env.set_fault("brownout", zone="all_but_0", severity=SEVERITY, start = 0, length = 30)
+            print("fault set:", env.fault)
 
         rep = tr.step()
 
@@ -110,6 +114,10 @@ def run(data, heal, seed, kl_target):
         if it % 25 == 0 or FAULT_AT - 5 <= it <= FAULT_AT + 25:
             perf = {b: round(r["perf"], 2) for b, r in sorted(rep["buckets"].items())}
             print(f"it {it:3d} heal={heal} mean_reward={rep['mean_return']:.2f} {perf}")
+        
+    log = pd.DataFrame(ctrl.log)
+    print(f"\nheal={heal} seed={seed}  controller cells:")
+    print(log["cell"].value_counts().to_string())
 
     events = pd.DataFrame(tr.log.events) if tr.log.events else pd.DataFrame()
     return pd.DataFrame(rows), events, pol.theta.copy()
@@ -143,6 +151,7 @@ def main():
                    "batch": BATCH, "episode_min": EPISODE_MIN,
                    "fault_zone": FAULT_ZONE, "severity": SEVERITY}, f, indent=2)
     print("saved runs/healing_rows.parquet")
+
 
 
 if __name__ == "__main__":
