@@ -252,7 +252,13 @@ class ZoneEnv:
         end = self.fault["start"] + self.fault["length"]
 
         return minute < end # easy way to check for fault regions 
+    
+    def bucket_of(state):
+        util_values , latency_ratios , spare = decode(state) 
+        return util_values , latency_ratios
         
+        # Since each state is made of the follwoing it gives us a possiblke buckets where the busyness is the highest (always creates them regardless)
+        # Busyness x latency , brownout rauses latecncy in particular regimes , the affected states land in buckets and rest stays untoiched , anmd this is how the harness locallizes 
     def step(self, action):
         d, m, zi = self.d, self.m, self.zi
 

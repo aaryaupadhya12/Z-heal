@@ -51,9 +51,6 @@ class HealLog:
         return [e for e in self.events if e["iter"] >= it]
 
 
-# ----------------------------------------------------------------------
-# 1. Oscillation in a scalar error signal
-# ----------------------------------------------------------------------
 
 class OscillationDetector:
     """Zero-crossing rate of a signal over a sliding window.
@@ -90,9 +87,6 @@ class OscillationDetector:
         self._hist[key].clear()
 
 
-# ----------------------------------------------------------------------
-# 2/3. A -> B -> A flips in a discrete sequence
-# ----------------------------------------------------------------------
 
 class FlapDetector:
     """Counts A->B->A reversals in the last `window` changes of a value."""
@@ -141,9 +135,6 @@ class PolicyFlapMonitor:
         return flapping
 
 
-# ----------------------------------------------------------------------
-# 4. Rollback with verification
-# ----------------------------------------------------------------------
 
 class RollbackGuard:
     """Per-bucket last-known-good snapshot, used only when a bucket
