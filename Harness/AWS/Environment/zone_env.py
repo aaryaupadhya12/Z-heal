@@ -270,6 +270,9 @@ class ZoneEnv:
             "rupees": cost_value, "slo_miss": bool(slo_missed),
             "local_frac": local_frac, "reward": reward, "state": next_state,
             "util": [util(loads_now[k], capacity(d, m, k)) for k in range(4)],
+            "arrivals" : float(d["arrivals"][m].sum()),
+            "loads": [float(x) for x in loads_now],
+            "fault" : getattr(self, "fault_name", None),
         }
         return next_state, reward, done, False, info
 
