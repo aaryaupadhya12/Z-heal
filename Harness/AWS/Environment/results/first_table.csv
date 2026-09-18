@@ -1,0 +1,7 @@
+window,agent,p50_ms,p99_ms,rupees_per_hour,slo_miss_min,local_pct,mean_reward
+quiet,forced_local,44.3,582.5,0.0,0,100.0,-0.719
+quiet,Weighted_Agent,44.4,583.7,172.8,0,24.6,-3.608
+quiet,aws_envoy,43.8,582.7,18.8,0,91.8,-1.034
+busy,forced_local,395.6,2327.0,0.0,171,100.0,-3.471
+busy,Weighted_Agent,40.6,2720.0,371.4,32,24.6,-7.163
+busy,aws_envoy,269.7,2028.3,40.4,149,91.8,-3.302
