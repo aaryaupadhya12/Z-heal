@@ -15,7 +15,7 @@ const { BedrockRuntimeClient, InvokeModelCommand } = require("@aws-sdk/client-be
 
 
 const ROUTERS = [
-  "http://3.107.233.251:8000", //these are not corrrect expect the first 1 change them in a env idk if its s sec risk
+  "http://0.0.0.0:8000", //these are not corrrect expect the first 1 change them in a env idk if its s sec risk, here the ip address goes in 
   "http://0.0.0.0:8000",
   "http://0.0.0.0:8000",
 ];
