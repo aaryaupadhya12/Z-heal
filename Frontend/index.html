@@ -1,0 +1,1671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZoneHeal — Dashboard</title>
+  <meta name="description" content="ZoneHeal real-time dashboard — monitor and heal your AWS Availability Zone routing with reinforcement learning">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* ────────────────────────────────────────────────────────────
+       Design tokens — AWS Console palette
+    ──────────────────────────────────────────────────────────── */
+    :root {
+      --bg-base:      #0f1b2d;
+      --bg-card:      #1b2a3b;
+      --bg-raised:    #1f3044;
+      --bg-input:     #16202d;
+      --border:       #2a3f55;
+      --border-light: #3a5065;
+      --text-primary: #d5dbdb;
+      --text-heading: #ffffff;
+      --text-muted:   #8d9ba8;
+      --amber:        #f90;
+      --amber-hover:  #e88b00;
+      --amber-dark:   rgba(255,153,0,.15);
+      --blue:         #0073bb;
+      --blue-dark:    rgba(0,115,187,.15);
+      --green:        #5fb85f;
+      --green-dark:   rgba(29,129,2,.15);
+      --red:          #ff4d4d;
+      --red-dark:     rgba(217,21,21,.15);
+      --yellow:       #f0ab00;
+      --yellow-dark:  rgba(240,171,0,.15);
+      --nav-h:        52px;
+      --radius:       8px;
+      --radius-sm:    5px;
+      --shadow:       0 2px 12px rgba(0,0,0,.4);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* ── Scrollbar ─────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg-input); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+    /* ── Navigation ────────────────────────────────────────────── */
+    .nav {
+      height: var(--nav-h);
+      background: #0a1420;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 0;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      text-decoration: none;
+      margin-right: 28px;
+    }
+
+    .nav-brand-icon {
+      width: 30px;
+      height: 30px;
+      background: var(--amber);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+
+    .nav-brand-name {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text-heading);
+      letter-spacing: -.2px;
+    }
+
+    .nav-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+      margin-right: 16px;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 2px;
+    }
+
+    .nav-tab {
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      color: var(--text-muted);
+      font-weight: 500;
+      font-size: 13px;
+      transition: all .15s;
+      border: 1px solid transparent;
+      user-select: none;
+    }
+
+    .nav-tab:hover { color: var(--text-heading); background: var(--bg-card); }
+    .nav-tab.active { color: var(--text-heading); background: var(--bg-card); border-color: var(--border); }
+
+    .nav-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .nav-system-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      transition: background .4s;
+    }
+
+    .nav-updated {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* ── Pages ─────────────────────────────────────────────────── */
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* ── Dashboard 3-column grid ───────────────────────────────── */
+    .dash-grid {
+      display: grid;
+      grid-template-columns: 290px 1fr 275px;
+      height: calc(100vh - var(--nav-h));
+      overflow: hidden;
+    }
+
+    .dash-col {
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+    }
+
+    .dash-col:last-child { border-right: none; }
+
+    /* ── Chat panel ────────────────────────────────────────────── */
+    .chat-col {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - var(--nav-h));
+      overflow: hidden;
+    }
+
+    .chat-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      background: #0d1927;
+    }
+
+    .chat-avatar {
+      width: 34px;
+      height: 34px;
+      background: linear-gradient(135deg, var(--amber), var(--amber-hover));
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .chat-name { font-weight: 600; font-size: 13px; color: var(--text-heading); }
+    .chat-sub  { font-size: 11px; color: var(--text-muted); }
+
+    .chat-online {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--green);
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg { max-width: 88%; }
+    .msg.user      { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+
+    @keyframes msgIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg { animation: msgIn .2s ease; }
+
+    .msg-bubble {
+      padding: 9px 13px;
+      border-radius: 12px;
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+
+    .msg.user      .msg-bubble {
+      background: var(--amber);
+      color: #0a1420;
+      font-weight: 500;
+      border-bottom-right-radius: 3px;
+    }
+
+    .msg.assistant .msg-bubble {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 3px;
+    }
+
+    .msg-time {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 3px;
+      padding: 0 4px;
+    }
+
+    .msg.user .msg-time { text-align: right; }
+
+    .chat-chips {
+      padding: 8px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      border-top: 1px solid var(--border);
+    }
+
+    .chip {
+      padding: 4px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 11px;
+      cursor: pointer;
+      transition: all .15s;
+      font-family: inherit;
+    }
+
+    .chip:hover { border-color: var(--amber); color: var(--amber); }
+
+    .chat-input-row {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 7px;
+      flex-shrink: 0;
+      background: #0d1927;
+    }
+
+    .chat-textarea {
+      flex: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px;
+      color: var(--text-primary);
+      font-size: 12.5px;
+      font-family: inherit;
+      outline: none;
+      resize: none;
+      transition: border-color .15s;
+    }
+
+    .chat-textarea:focus { border-color: var(--amber); }
+    .chat-textarea::placeholder { color: var(--text-muted); }
+
+    /* ── Generic buttons ───────────────────────────────────────── */
+    .btn {
+      padding: 7px 15px;
+      border-radius: var(--radius-sm);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: all .15s;
+      font-family: inherit;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-amber   { background: var(--amber);   color: #0a1420; }
+    .btn-amber:hover:not(:disabled) { background: var(--amber-hover); }
+
+    .btn-ghost   { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
+    .btn-ghost:hover:not(:disabled) { background: var(--bg-card); }
+
+    .btn-danger  { background: var(--red-dark); color: var(--red); border: 1px solid var(--red); }
+    .btn-danger:hover:not(:disabled) { background: var(--red); color: #fff; }
+
+    .btn-icon { width: 32px; height: 32px; padding: 0; justify-content: center; font-size: 14px; }
+
+    .btn-big {
+      padding: 10px 24px;
+      font-size: 14px;
+      border-radius: var(--radius);
+      font-weight: 600;
+    }
+
+    /* ── Metrics center panel ──────────────────────────────────── */
+    .metrics-col { padding: 16px; overflow-y: auto; }
+
+    .metrics-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .metrics-title { font-size: 17px; font-weight: 700; color: var(--text-heading); }
+    .metrics-sub   { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+    /* Status pills row */
+    .pill-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 11px;
+      border-radius: 14px;
+      font-size: 11.5px;
+      font-weight: 500;
+    }
+
+    .pill-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+    .pill-ok    { background: var(--green-dark);  color: var(--green);  }
+    .pill-ok    .pill-dot { background: var(--green); }
+    .pill-warn  { background: var(--yellow-dark); color: var(--yellow); }
+    .pill-warn  .pill-dot { background: var(--yellow); }
+    .pill-bad   { background: var(--red-dark);    color: var(--red);    }
+    .pill-bad   .pill-dot { background: var(--red); }
+    .pill-info  { background: var(--blue-dark);   color: #48cef7;       }
+    .pill-info  .pill-dot { background: #48cef7; }
+    .pill-amber { background: var(--amber-dark);  color: var(--amber);  }
+    .pill-amber .pill-dot { background: var(--amber); }
+
+    /* Zone cards */
+    .zone-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 14px; }
+
+    .zone-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 13px;
+      transition: border-color .25s;
+    }
+
+    .zone-card.state-healthy  { border-color: #1d8102; }
+    .zone-card.state-elevated { border-color: var(--yellow); }
+    .zone-card.state-critical { border-color: var(--red); }
+
+    .zc-name { font-size: 12.5px; font-weight: 700; color: var(--text-heading); }
+    .zc-az   { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; }
+
+    /* Circular gauge */
+    .gauge-wrap { display: flex; justify-content: center; margin-bottom: 8px; }
+
+    .gauge { position: relative; width: 66px; height: 66px; }
+    .gauge svg { transform: rotate(-90deg); }
+
+    .g-bg   { fill: none; stroke: var(--border); stroke-width: 6; }
+    .g-fill { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .5s ease; }
+
+    .gauge-pct {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700; color: var(--text-heading);
+    }
+
+    .zc-stats { display: flex; flex-direction: column; gap: 5px; }
+
+    .zc-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .zc-label { font-size: 11px; color: var(--text-muted); }
+    .zc-val   { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+
+    .zc-badge {
+      display: inline-block;
+      margin-top: 7px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .badge-ok   { background: var(--green-dark);  color: var(--green);  }
+    .badge-warn { background: var(--yellow-dark); color: var(--yellow); }
+    .badge-err  { background: var(--red-dark);    color: var(--red);    }
+
+    .spill-track {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      margin-top: 7px;
+      overflow: hidden;
+    }
+
+    .spill-fill {
+      height: 100%;
+      background: var(--amber);
+      border-radius: 2px;
+      transition: width .4s ease;
+    }
+
+    /* Chart card */
+    .chart-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .cc-hd {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .cc-title { font-size: 13px; font-weight: 600; color: var(--text-heading); }
+    .cc-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px; max-width: 320px; }
+
+    .cc-legend { display: flex; gap: 10px; flex-wrap: wrap; }
+    .leg-item  { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); }
+    .leg-dot   { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Cost row */
+    .cost-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+
+    .cost-lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
+    .cost-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .cost-val  { font-size: 22px; font-weight: 700; color: var(--text-heading); text-align: right; }
+    .cost-sub  { font-size: 10.5px; color: var(--text-muted); text-align: right; margin-top: 2px; }
+
+    /* ── Risk / Alert panel ─────────────────────────────────────── */
+    .risk-col { padding: 14px; overflow-y: auto; }
+
+    .risk-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+
+    .risk-box-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    /* Risk level display */
+    .risk-level-val {
+      font-size: 18px;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+
+    .rl-healthy  { color: var(--green); }
+    .rl-elevated { color: var(--yellow); }
+    .rl-high     { color: #ff8c00; }
+    .rl-critical { color: var(--red); }
+
+    .risk-bar-track { height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .risk-bar-fill  { height: 100%; border-radius: 4px; transition: width .5s, background .5s; }
+    .risk-bar-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 3px;
+      font-size: 9.5px;
+      color: var(--text-muted);
+    }
+
+    /* Alert lamp */
+    .lamp-row { display: flex; align-items: center; gap: 11px; }
+
+    .lamp {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--border);
+      border: 2px solid var(--border-light);
+      flex-shrink: 0;
+      transition: all .3s;
+    }
+
+    .lamp.on {
+      background: var(--amber);
+      border-color: var(--amber);
+      box-shadow: 0 0 0 4px var(--amber-dark);
+      animation: lampPulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes lampPulse {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(255,153,0,.2); }
+      50%       { box-shadow: 0 0 0 9px rgba(255,153,0,.07); }
+    }
+
+    .lamp-text strong { display: block; font-size: 12.5px; color: var(--text-primary); margin-bottom: 1px; }
+    .lamp-text span   { font-size: 11px; color: var(--text-muted); }
+
+    .receipt-box {
+      margin-top: 9px;
+      padding: 9px 11px;
+      background: var(--bg-input);
+      border-radius: 5px;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.55;
+      border-left: 3px solid var(--amber);
+      display: none;
+    }
+
+    /* Mode buttons */
+    .mode-btn-row { display: flex; flex-direction: column; gap: 5px; }
+
+    .mode-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 11px;
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all .15s;
+      text-align: left;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .mode-btn:hover { background: var(--bg-raised); border-color: var(--border-light); }
+    .mode-btn.active { border-color: var(--amber); background: var(--amber-dark); }
+    .mode-btn .mode-tag { font-size: 10px; color: var(--text-muted); }
+
+    /* Incidents */
+    .incident-row {
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .incident-row:last-child { border-bottom: none; }
+    .inc-zone { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .inc-meta { font-size: 10.5px; color: var(--text-muted); margin-top: 1px; }
+    .inc-cost { font-size: 11px; color: var(--amber); font-weight: 600; }
+
+    /* Spend input */
+    .spend-row { display: flex; gap: 6px; align-items: center; }
+
+    .spend-input {
+      flex: 1;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 6px 9px;
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .spend-input:focus { border-color: var(--amber); }
+
+    /* ── Simulate page ──────────────────────────────────────────── */
+    .sim-page {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 24px 20px;
+    }
+
+    .sim-hd { margin-bottom: 20px; }
+    .sim-title { font-size: 20px; font-weight: 700; color: var(--text-heading); margin-bottom: 5px; }
+    .sim-desc  { font-size: 13px; color: var(--text-muted); max-width: 580px; line-height: 1.55; }
+
+    .sim-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .sim-select {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 11px;
+      color: var(--text-primary);
+      font-size: 12.5px;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .sim-select:focus { border-color: var(--amber); }
+
+    .sim-timer { font-size: 12px; color: var(--text-muted); }
+
+    /* Phase tracker */
+    .phases {
+      display: flex;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 20px;
+      margin-bottom: 16px;
+      overflow-x: auto;
+    }
+
+    .phase { flex: 1; text-align: center; position: relative; min-width: 80px; }
+
+    .phase::after {
+      content: '';
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      width: 100%;
+      height: 2px;
+      background: var(--border);
+      z-index: 0;
+    }
+
+    .phase:last-child::after { display: none; }
+
+    .ph-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--bg-input);
+      border: 2px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      margin: 0 auto 5px;
+      position: relative;
+      z-index: 1;
+      transition: all .3s;
+    }
+
+    .phase.active .ph-icon { background: var(--amber);    border-color: var(--amber); color: #0a1420; }
+    .phase.done   .ph-icon { background: var(--green);    border-color: var(--green); }
+    .phase.done::after     { background: var(--green); }
+
+    .ph-name { font-size: 10.5px; color: var(--text-muted); font-weight: 500; }
+    .phase.active .ph-name { color: var(--amber); }
+    .phase.done   .ph-name { color: var(--green); }
+
+    /* Sim info box */
+    .sim-info {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+      line-height: 1.55;
+      display: none;
+    }
+
+    .sim-info.visible { display: block; }
+
+    /* Sim charts */
+    .sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+
+    /* Summary */
+    .summary {
+      background: linear-gradient(135deg, #1b2a3b 0%, #0d3d01 100%);
+      border: 1px solid #2d6b02;
+      border-radius: var(--radius);
+      padding: 18px;
+      display: none;
+    }
+
+    .summary.visible { display: block; animation: msgIn .4s ease; }
+
+    .sum-title { font-size: 15px; font-weight: 700; color: var(--green); margin-bottom: 14px; }
+
+    .sum-stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
+
+    .sum-stat-val { font-size: 20px; font-weight: 700; color: var(--text-heading); }
+    .sum-stat-lbl { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Comparison table */
+    .cmp-table { width: 100%; border-collapse: collapse; }
+    .cmp-table th, .cmp-table td { padding: 8px 10px; font-size: 12px; }
+    .cmp-table thead tr { border-bottom: 1px solid var(--border); }
+    .cmp-table th { font-weight: 500; color: var(--text-muted); }
+    .cmp-table td { border-bottom: 1px solid var(--border); }
+    .cmp-table tbody tr:last-child td { border-bottom: none; }
+    .cmp-ai   { color: var(--green); font-weight: 600; }
+    .cmp-rule { color: var(--red); }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      border: 2px solid rgba(255,153,0,.25);
+      border-top-color: var(--amber);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 1100px) {
+      .dash-grid { grid-template-columns: 260px 1fr 250px; }
+    }
+
+    @media (max-width: 860px) {
+      .dash-grid { grid-template-columns: 1fr; height: auto; }
+      .chat-col { height: 380px; }
+      .zone-row { grid-template-columns: 1fr; }
+      .sim-grid { grid-template-columns: 1fr; }
+      .sum-stats { grid-template-columns: repeat(2,1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════
+     Navigation
+════════════════════════════════════════════════════════════ -->
+<nav class="nav">
+  <a href="#" class="nav-brand" onclick="return false;">
+    <div class="nav-brand-icon">⚡</div>
+    <span class="nav-brand-name">ZoneHeal</span>
+  </a>
+  <div class="nav-divider"></div>
+  <div class="nav-tabs">
+    <div class="nav-tab active" id="tab-dashboard" onclick="showPage('dashboard')">Dashboard</div>
+    <div class="nav-tab"       id="tab-simulate"  onclick="showPage('simulate')">Simulate</div>
+  </div>
+  <div class="nav-right">
+    <div class="nav-system-status">
+      <div class="status-dot" id="sysDot"></div>
+      <span id="sysTxt">Connecting…</span>
+    </div>
+    <div class="nav-updated" id="navUpdated"></div>
+  </div>
+</nav>
+
+
+<!-- ════════════════════════════════════════════════════════════
+     PAGE 1 — Dashboard
+════════════════════════════════════════════════════════════ -->
+<div class="page active" id="page-dashboard">
+<div class="dash-grid">
+
+  <!-- ── LHS: Bedrock Chat ─────────────────────────────────── -->
+  <div class="chat-col dash-col">
+    <div class="chat-header">
+      <div class="chat-avatar">🤖</div>
+      <div>
+        <div class="chat-name">AI Assistant</div>
+        <div class="chat-sub">Amazon Bedrock · Claude 3.5 Sonnet</div>
+      </div>
+      <div class="chat-online">
+        <div class="status-dot" style="width:6px;height:6px;"></div>
+        Live
+      </div>
+    </div>
+
+    <div class="chat-messages" id="chatMsgs">
+      <div class="msg assistant">
+        <div class="msg-bubble">
+          Hi! I'm watching your three AWS zones in real time. Ask me anything — I'll keep it simple. 👋
+        </div>
+        <div class="msg-time">Now</div>
+      </div>
+    </div>
+
+    <div class="chat-chips">
+      <button class="chip" onclick="suggest('Is the system healthy right now?')">System healthy?</button>
+      <button class="chip" onclick="suggest('Why is traffic being rerouted?')">Why rerouting?</button>
+      <button class="chip" onclick="suggest('What does p99 latency mean in plain English?')">Explain p99</button>
+      <button class="chip" onclick="suggest('How much has cross-zone traffic cost so far?')">Cost so far?</button>
+      <button class="chip" onclick="suggest('What is the current routing mode?')">Current mode?</button>
+    </div>
+
+    <div class="chat-input-row">
+      <textarea class="chat-textarea" id="chatIn" placeholder="Ask about your system…" rows="2"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+      <button class="btn btn-amber btn-icon" id="sendBtn" onclick="sendChat()" title="Send">➤</button>
+    </div>
+  </div>
+
+  <!-- ── CENTER: Metrics ──────────────────────────────────── -->
+  <div class="metrics-col dash-col">
+    <div class="metrics-hd">
+      <div>
+        <div class="metrics-title">System Health</div>
+        <div class="metrics-sub" id="metaUpdated">Fetching…</div>
+      </div>
+      <button class="btn btn-ghost" onclick="refreshAll()" style="font-size:12px;">↺ Refresh</button>
+    </div>
+
+    <!-- SLO / mode status pills -->
+    <div class="pill-row" id="pillRow">
+      <div class="pill pill-info"><span class="pill-dot"></span>Loading…</div>
+    </div>
+
+    <!-- Zone cards -->
+    <div class="zone-row" id="zoneRow">
+      <div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:20px;">
+        Waiting for zone data…
+      </div>
+    </div>
+
+    <!-- p99 chart -->
+    <div class="chart-card">
+      <div class="cc-hd">
+        <div>
+          <div class="cc-title">Response Time — Last 30 minutes</div>
+          <div class="cc-sub">How long it takes for the slowest 1% of requests to complete (p99). Under 200ms is healthy.</div>
+        </div>
+        <div class="cc-legend" id="p99Legend"></div>
+      </div>
+      <canvas id="p99ChartCanvas" height="130"></canvas>
+    </div>
+
+    <!-- Cost row -->
+    <div class="cost-row">
+      <div>
+        <div class="cost-lbl">Cross-Zone Cost</div>
+        <div class="cost-desc">What rerouting traffic between zones has cost this session</div>
+      </div>
+      <div>
+        <div class="cost-val" id="costVal">₹0.0000</div>
+        <div class="cost-sub" id="bytesVal">0 GB moved</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RHS: Risk + Alert ─────────────────────────────────── -->
+  <div class="risk-col dash-col">
+
+    <!-- Risk level -->
+    <div class="risk-box">
+      <div class="risk-box-title">System Risk Level</div>
+      <div class="risk-level-val" id="riskVal">—</div>
+      <div class="risk-bar-track">
+        <div class="risk-bar-fill" id="riskBar" style="width:0%"></div>
+      </div>
+      <div class="risk-bar-labels"><span>Safe</span><span>Critical</span></div>
+    </div>
+
+    <!-- Alert lamp -->
+    <div class="risk-box">
+      <div class="risk-box-title">Spend Alert</div>
+      <div class="lamp-row">
+        <div class="lamp" id="alertLamp"></div>
+        <div class="lamp-text">
+          <strong id="lampTitle">All clear</strong>
+          <span id="lampDesc">Spend is within your limit</span>
+        </div>
+      </div>
+      <div class="receipt-box" id="receiptBox"></div>
+    </div>
+
+    <!-- Spend limit -->
+    <div class="risk-box">
+      <div class="risk-box-title">Spend Limit</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">
+        You'll get an alert email when cross-zone costs hit this number
+      </div>
+      <div class="spend-row">
+        <span style="font-size:12px;color:var(--text-muted)">₹</span>
+        <input class="spend-input" type="number" id="limitInput" value="1000" min="1">
+        <button class="btn btn-amber" onclick="setLimit()" style="padding:6px 10px;font-size:11.5px;">Set</button>
+      </div>
+    </div>
+
+    <!-- Routing mode -->
+    <div class="risk-box">
+      <div class="risk-box-title">Routing Mode</div>
+      <div class="mode-btn-row">
+        <button class="mode-btn" id="mode-policy" onclick="setMode('policy')">
+          <span>🤖 AI Policy</span>
+          <span class="mode-tag">Active control</span>
+        </button>
+        <button class="mode-btn" id="mode-shadow" onclick="setMode('shadow')">
+          <span>👁 Shadow</span>
+          <span class="mode-tag">AI watches only</span>
+        </button>
+        <button class="mode-btn" id="mode-rule" onclick="setMode('rule')">
+          <span>📋 Rule-based</span>
+          <span class="mode-tag">Deterministic fallback</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Incidents -->
+    <div class="risk-box">
+      <div class="risk-box-title">Recent Incidents</div>
+      <div id="incList">
+        <div style="font-size:12px;color:var(--text-muted);text-align:center;padding:10px;">No incidents yet</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</div><!-- /page-dashboard -->
+
+
+<!-- ════════════════════════════════════════════════════════════
+     PAGE 2 — Simulate
+════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-simulate">
+<div class="sim-page">
+
+  <div class="sim-hd">
+    <h1 class="sim-title">Policy Simulation</h1>
+    <p class="sim-desc">
+      Trigger a controlled fault in a live AWS Availability Zone and watch the ZoneHeal RL policy
+      detect, react, and heal — all in real time against your actual ECS tasks.
+    </p>
+  </div>
+
+  <div class="sim-controls">
+    <select class="sim-select" id="scenarioSel">
+      <option value="ap-southeast-2b">Brownout — Zone B (ap-southeast-2b)</option>
+      <option value="ap-southeast-2c">Brownout — Zone C (ap-southeast-2c)</option>
+      <option value="ap-southeast-2a">Brownout — Zone A (ap-southeast-2a)</option>
+    </select>
+    <button class="btn btn-amber btn-big" id="startSimBtn" onclick="startSim()">▶ Start Simulation</button>
+    <button class="btn btn-danger"        id="stopSimBtn"  onclick="stopSim()" disabled>■ Stop</button>
+    <span class="sim-timer" id="simTimer"></span>
+  </div>
+
+  <!-- Phase tracker -->
+  <div class="phases" id="phaseBar">
+    <div class="phase" id="ph-baseline"><div class="ph-icon">1</div><div class="ph-name">Baseline</div></div>
+    <div class="phase" id="ph-fault">   <div class="ph-icon">⚡</div><div class="ph-name">Fault</div></div>
+    <div class="phase" id="ph-policy">  <div class="ph-icon">🤖</div><div class="ph-name">AI Heals</div></div>
+    <div class="phase" id="ph-recovery"><div class="ph-icon">✓</div><div class="ph-name">Recovery</div></div>
+    <div class="phase" id="ph-complete"><div class="ph-icon">🎉</div><div class="ph-name">Complete</div></div>
+  </div>
+
+  <!-- Info text -->
+  <div class="sim-info" id="simInfo"></div>
+
+  <!-- Charts -->
+  <div class="sim-grid">
+    <div class="chart-card">
+      <div class="cc-hd">
+        <div>
+          <div class="cc-title">Response Time (p99)</div>
+          <div class="cc-sub">Watch it spike when the fault hits, then recover when the AI takes over</div>
+        </div>
+      </div>
+      <canvas id="simP99Canvas" height="170"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="cc-hd">
+        <div>
+          <div class="cc-title">Traffic Rerouted</div>
+          <div class="cc-sub">Fraction of traffic the AI is diverting away from the affected zone</div>
+        </div>
+      </div>
+      <canvas id="simSpillCanvas" height="170"></canvas>
+    </div>
+  </div>
+
+  <!-- Comparison table -->
+  <div class="chart-card" id="cmpCard" style="display:none;">
+    <div class="cc-title" style="margin-bottom:10px;">AI Policy vs. Rule-Based Routing</div>
+    <table class="cmp-table">
+      <thead>
+        <tr>
+          <th style="text-align:left;">Metric</th>
+          <th style="text-align:right;">ZoneHeal AI</th>
+          <th style="text-align:right;">Rule-based</th>
+        </tr>
+      </thead>
+      <tbody id="cmpBody"></tbody>
+    </table>
+  </div>
+
+  <!-- Summary -->
+  <div class="summary" id="simSummary">
+    <div class="sum-title">✅ Simulation complete — ZoneHeal handled it</div>
+    <div class="sum-stats" id="sumStats"></div>
+  </div>
+
+</div>
+</div><!-- /page-simulate -->
+
+
+<!-- ════════════════════════════════════════════════════════════
+     JavaScript
+════════════════════════════════════════════════════════════ -->
+<script>
+  // ──────────────────────────────────────────────────────────
+  // Constants
+  // ──────────────────────────────────────────────────────────
+  const POLL_MS     = 10000;   // dashboard refresh
+  const SIM_POLL_MS = 3000;    // simulation refresh
+
+  const AZ_COLORS = {
+    'ap-southeast-2a': '#f90',
+    'ap-southeast-2b': '#48cef7',
+    'ap-southeast-2c': '#9d7bea',
+  };
+
+  const PHASE_ORDER = ['baseline','fault','policy','recovery','complete'];
+
+  const PHASE_COPY = {
+    idle:     '',
+    starting: '⏳ Preparing — setting all routers to shadow mode…',
+    baseline: '📊 Collecting baseline data — recording normal system behaviour for 15 seconds…',
+    fault:    '⚡ Fault injected. One zone is now experiencing a brownout. Watch the p99 latency spike on the chart.',
+    policy:   '🤖 AI policy active — ZoneHeal is detecting the fault and rerouting traffic. Watch the spill bars rise and latency recover.',
+    recovery: '💚 Lifting the fault — brownout removed, restoring normal routing…',
+    complete: '✅ Done! The AI policy detected the fault, rerouted traffic, and maintained your SLO.',
+    error:    '❌ Simulation error. The system has been restored to safe mode.',
+  };
+
+  // ──────────────────────────────────────────────────────────
+  // Helpers
+  // ──────────────────────────────────────────────────────────
+  function azColor(az) { return AZ_COLORS[az] || '#8d9ba8'; }
+
+  function azLabel(az) {
+    if (!az) return 'Unknown';
+    if (az.endsWith('a')) return 'Zone A';
+    if (az.endsWith('b')) return 'Zone B';
+    if (az.endsWith('c')) return 'Zone C';
+    return az;
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function fmt(d) { return new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }); }
+  function fmtSec(d) { return new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' }); }
+
+  function svgGauge(pct, color) {
+    const r = 27, circ = 2 * Math.PI * r;
+    const dash = circ * Math.min(pct, 1), gap = circ - dash;
+    return `
+      <svg width="66" height="66" viewBox="0 0 66 66">
+        <circle class="g-bg"   cx="33" cy="33" r="${r}" transform="rotate(-90 33 33)"/>
+        <circle class="g-fill" cx="33" cy="33" r="${r}"
+          stroke="${color}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}"
+          transform="rotate(-90 33 33)"/>
+      </svg>
+      <div class="gauge-pct">${Math.round(pct*100)}%</div>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Page switching
+  // ──────────────────────────────────────────────────────────
+  function showPage(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('page-' + name).classList.add('active');
+    document.getElementById('tab-' + name).classList.add('active');
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Chart.js — p99 history (Dashboard)
+  // ──────────────────────────────────────────────────────────
+  let p99Chart = null;
+
+  function chartDefaults() {
+    return {
+      responsive: true,
+      animation: { duration: 300 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1b2a3b',
+          borderColor: '#2a3f55',
+          borderWidth: 1,
+          titleColor: '#fff',
+          bodyColor: '#d5dbdb',
+          padding: 8,
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#8d9ba8', font: { size: 10 }, maxTicksLimit: 8 },
+          grid: { color: 'rgba(42,63,85,.35)' },
+          border: { color: '#2a3f55' },
+        },
+        y: {
+          ticks: { color: '#8d9ba8', font: { size: 10 } },
+          grid: { color: 'rgba(42,63,85,.35)' },
+          border: { color: '#2a3f55' },
+          min: 0,
+        }
+      }
+    };
+  }
+
+  function initDashChart() {
+    const ctx = document.getElementById('p99ChartCanvas').getContext('2d');
+    const opts = chartDefaults();
+    opts.scales.y.ticks.callback = v => v + 'ms';
+    opts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(0)}ms` };
+    // SLO reference line via plugin
+    opts.plugins.annotation = {};
+    p99Chart = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: opts });
+  }
+
+  function updateDashChart(history) {
+    if (!p99Chart || !history.length) return;
+
+    const labels = history.map(h => fmt(h.timestamp));
+    const azSet  = new Set(history.flatMap(h => Object.keys(h.zones || {})));
+    const azList = [...azSet].sort();
+
+    p99Chart.data.labels   = labels;
+    p99Chart.data.datasets = azList.map(az => ({
+      label:           azLabel(az),
+      data:            history.map(h => ((h.zones||{})[az]||{}).p99 || 0),
+      borderColor:     azColor(az),
+      backgroundColor: azColor(az) + '18',
+      borderWidth:     2,
+      pointRadius:     2,
+      tension:         0.35,
+      fill:            false,
+    }));
+    p99Chart.update();
+
+    // Legend
+    document.getElementById('p99Legend').innerHTML = azList.map(az =>
+      `<div class="leg-item"><div class="leg-dot" style="background:${azColor(az)}"></div>${azLabel(az)}</div>`
+    ).join('');
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Zone cards
+  // ──────────────────────────────────────────────────────────
+  function renderZones(zones) {
+    const row = document.getElementById('zoneRow');
+    if (!Object.keys(zones).length) return;
+
+    row.innerHTML = Object.entries(zones).sort(([a],[b]) => a.localeCompare(b)).map(([az, z]) => {
+      const cls   = z.sloMissed || z.util > .9 ? 'critical' : z.spill > 0 || z.util > .6 ? 'elevated' : 'healthy';
+      const gc    = cls === 'critical' ? '#ff4d4d' : cls === 'elevated' ? '#f0ab00' : '#5fb85f';
+      const bCls  = z.spill > 0 ? 'badge-warn' : cls === 'critical' ? 'badge-err' : 'badge-ok';
+      const bTxt  = z.spill > 0 ? `Spilling ${Math.round(z.spill*100)}%` : cls === 'critical' ? 'Degraded' : 'Healthy';
+      const p99c  = z.sloMissed ? '#ff4d4d' : '#5fb85f';
+      const sp    = Math.round((z.spill||0)*100);
+
+      return `
+        <div class="zone-card state-${cls}">
+          <div class="zc-name">${azLabel(az)}</div>
+          <div class="zc-az">${az}</div>
+          <div class="gauge-wrap"><div class="gauge">${svgGauge(z.util||0, gc)}</div></div>
+          <div class="zc-stats">
+            <div class="zc-row">
+              <span class="zc-label">Utilization</span>
+              <span class="zc-val">${Math.round((z.util||0)*100)}%</span>
+            </div>
+            <div class="zc-row">
+              <span class="zc-label">p99 response</span>
+              <span class="zc-val" style="color:${p99c}">${Math.round(z.p99||0)}ms</span>
+            </div>
+            <div class="zc-row">
+              <span class="zc-label">SLO limit</span>
+              <span class="zc-val">200 ms</span>
+            </div>
+          </div>
+          <span class="zc-badge ${bCls}">${bTxt}</span>
+          ${sp > 0 ? `
+            <div style="margin-top:7px;">
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:3px;">
+                <span>Traffic rerouted</span><span>${sp}%</span>
+              </div>
+              <div class="spill-track"><div class="spill-fill" style="width:${sp}%"></div></div>
+            </div>` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Status pills
+  // ──────────────────────────────────────────────────────────
+  function renderPills(cw, status) {
+    const zones  = Object.values(cw.zones||{});
+    const missed = zones.some(z => z.sloMissed);
+    const spill  = cw.anySpilling;
+    const mode   = zones[0]?.mode;
+
+    const modePillMap = { policy: ['pill-ok','🤖 AI Policy'], shadow: ['pill-info','👁 Shadow'], rule: ['pill-warn','📋 Rule-based'] };
+    const [mCls, mLbl] = modePillMap[mode] || ['pill-info','—'];
+
+    document.getElementById('pillRow').innerHTML = [
+      `<div class="pill ${missed ? 'pill-bad' : 'pill-ok'}">
+         <span class="pill-dot"></span>${missed ? 'SLO Violated' : 'Within SLO'}
+       </div>`,
+      mode ? `<div class="pill ${mCls}"><span class="pill-dot"></span>${mLbl}</div>` : '',
+      spill ? `<div class="pill pill-amber"><span class="pill-dot"></span>Traffic Rerouting</div>` : '',
+      status.overLimit ? `<div class="pill pill-bad"><span class="pill-dot"></span>Over Spend Limit</div>` : '',
+    ].join('');
+
+    // Highlight active mode button
+    ['policy','shadow','rule'].forEach(m => {
+      document.getElementById('mode-'+m).classList.toggle('active', m === mode);
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Risk panel
+  // ──────────────────────────────────────────────────────────
+  const RISK_CFG = {
+    healthy:  { pct: 8,   color: '#5fb85f',  bar: '#1d8102',  dot: '#5fb85f', txt: 'Healthy'  },
+    elevated: { pct: 38,  color: '#f0ab00',  bar: '#f0ab00',  dot: '#f0ab00', txt: 'Elevated' },
+    high:     { pct: 68,  color: '#ff8c00',  bar: '#ff8c00',  dot: '#ff8c00', txt: 'High'     },
+    critical: { pct: 100, color: '#ff4d4d',  bar: '#d91515',  dot: '#ff4d4d', txt: 'Critical' },
+  };
+
+  function updateRisk(risk, status) {
+    const cfg = RISK_CFG[risk] || RISK_CFG.healthy;
+
+    // Nav dot
+    document.getElementById('sysDot').style.background = cfg.dot;
+    document.getElementById('sysTxt').textContent = cfg.txt;
+
+    // Risk bar
+    document.getElementById('riskVal').textContent  = cfg.txt;
+    document.getElementById('riskVal').className    = `risk-level-val rl-${risk}`;
+    document.getElementById('riskBar').style.width  = cfg.pct + '%';
+    document.getElementById('riskBar').style.background = cfg.bar;
+
+    // Alert lamp
+    const lamp = document.getElementById('alertLamp');
+    lamp.className = 'lamp' + (status.overLimit ? ' on' : '');
+    document.getElementById('lampTitle').textContent = status.overLimit ? '⚠ Spend Limit Reached' : 'All clear';
+    document.getElementById('lampDesc').textContent  = status.overLimit
+      ? `₹${status.spentRupees.toFixed(2)} spent — email sent`
+      : 'Spend within your limit';
+
+    const rBox = document.getElementById('receiptBox');
+    if (status.receipt?.explanation) {
+      rBox.style.display = 'block';
+      rBox.textContent   = status.receipt.explanation;
+    } else {
+      rBox.style.display = 'none';
+    }
+
+    // Incidents
+    const il = document.getElementById('incList');
+    if (status.incidents?.length) {
+      il.innerHTML = status.incidents.slice(0,4).map(inc => `
+        <div class="incident-row">
+          <div style="display:flex;justify-content:space-between;">
+            <div>
+              <div class="inc-zone">${azLabel(inc.zone)} <span style="font-size:10px;font-weight:400;color:var(--text-muted)">${inc.zone||''}</span></div>
+              <div class="inc-meta">${new Date(inc.startedAt).toLocaleString()}</div>
+            </div>
+            ${inc.rupees != null ? `<div class="inc-cost">₹${inc.rupees.toFixed(3)}</div>` : ''}
+          </div>
+        </div>`).join('');
+    } else {
+      il.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:8px;">No incidents yet</div>';
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Cost
+  // ──────────────────────────────────────────────────────────
+  function updateCost(status) {
+    document.getElementById('costVal').textContent  = `₹${status.spentRupees.toFixed(4)}`;
+    document.getElementById('bytesVal').textContent = `${(status.bytesMoved/1e9).toFixed(4)} GB moved across zones`;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Main dashboard poll
+  // ──────────────────────────────────────────────────────────
+  async function refreshAll() {
+    try {
+      const [cwR, stR, hiR] = await Promise.all([
+        fetch('/api/cloudwatch'),
+        fetch('/api/status'),
+        fetch('/api/history'),
+      ]);
+      const cw   = await cwR.json();
+      const st   = await stR.json();
+      const hist = await hiR.json();
+
+      renderZones(cw.zones || {});
+      renderPills(cw, st);
+      updateRisk(cw.risk || 'healthy', st);
+      updateCost(st);
+      updateDashChart(hist.history || []);
+
+      const ts = new Date().toLocaleTimeString();
+      document.getElementById('metaUpdated').textContent = `Last updated: ${ts}`;
+      document.getElementById('navUpdated').textContent  = ts;
+
+    } catch (err) {
+      console.error('[poll]', err);
+      document.getElementById('metaUpdated').textContent = 'Connection error — retrying…';
+      document.getElementById('sysDot').style.background = '#ff4d4d';
+      document.getElementById('sysTxt').textContent = 'Disconnected';
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Chat
+  // ──────────────────────────────────────────────────────────
+  let chatBusy = false;
+
+  function appendMsg(role, text) {
+    const box = document.getElementById('chatMsgs');
+    const ts  = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+    const el  = document.createElement('div');
+    el.className = 'msg ' + role;
+    el.innerHTML = `
+      <div class="msg-bubble">${esc(text).replace(/\n/g,'<br>')}</div>
+      <div class="msg-time">${ts}</div>
+    `;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function appendTyping() {
+    const box = document.getElementById('chatMsgs');
+    const el  = document.createElement('div');
+    el.id = 'typing';
+    el.className = 'msg assistant';
+    el.innerHTML = `<div class="msg-bubble" style="display:flex;gap:6px;align-items:center;">
+      <div class="spinner"></div><span style="font-size:11.5px;color:var(--text-muted)">Thinking…</span>
+    </div>`;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function sendChat() {
+    if (chatBusy) return;
+    const inp = document.getElementById('chatIn');
+    const msg = inp.value.trim();
+    if (!msg) return;
+
+    inp.value = '';
+    appendMsg('user', msg);
+    chatBusy = true;
+    document.getElementById('sendBtn').disabled = true;
+    appendTyping();
+
+    try {
+      const r  = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      const d = await r.json();
+      document.getElementById('typing')?.remove();
+      appendMsg('assistant', d.message || d.error || 'Sorry, something went wrong.');
+    } catch {
+      document.getElementById('typing')?.remove();
+      appendMsg('assistant', 'Connection error. Is the server running?');
+    } finally {
+      chatBusy = false;
+      document.getElementById('sendBtn').disabled = false;
+    }
+  }
+
+  function suggest(txt) {
+    document.getElementById('chatIn').value = txt;
+    sendChat();
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Controls
+  // ──────────────────────────────────────────────────────────
+  async function setLimit() {
+    const v = Number(document.getElementById('limitInput').value);
+    if (!v || v <= 0) return;
+    await fetch('/api/limit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ limit: v }) });
+  }
+
+  async function setMode(m) {
+    await fetch('/api/mode', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ mode: m }) });
+    setTimeout(refreshAll, 800);
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Simulation — charts
+  // ──────────────────────────────────────────────────────────
+  let simP99Chart   = null;
+  let simSpillChart = null;
+  let simLabels     = [];
+  let simP99        = {};  // az -> [values]
+  let simSpill      = {};  // az -> [values]
+
+  function initSimCharts() {
+    const p99Opts = chartDefaults();
+    p99Opts.scales.y.ticks.callback = v => v + 'ms';
+    p99Opts.plugins.legend = { display: true, labels: { color:'#8d9ba8', font:{ size:11 }, boxWidth:10 } };
+    p99Opts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(0)}ms` };
+
+    simP99Chart = new Chart(
+      document.getElementById('simP99Canvas').getContext('2d'),
+      { type:'line', data:{ labels:[], datasets:[] }, options: p99Opts }
+    );
+
+    const spOpts = chartDefaults();
+    spOpts.scales.y.ticks.callback = v => Math.round(v*100)+'%';
+    spOpts.scales.y.max = 0.6;
+    spOpts.plugins.legend = { display: true, labels: { color:'#8d9ba8', font:{ size:11 }, boxWidth:10 } };
+    spOpts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${Math.round(c.parsed.y*100)}%` };
+
+    simSpillChart = new Chart(
+      document.getElementById('simSpillCanvas').getContext('2d'),
+      { type:'bar', data:{ labels:[], datasets:[] }, options: spOpts }
+    );
+  }
+
+  function pushSimSnapshot(snap) {
+    if (!snap?.zones) return;
+    const ts = fmtSec(snap.timestamp);
+    simLabels.push(ts);
+    if (simLabels.length > 60) simLabels.shift();
+
+    Object.entries(snap.zones).forEach(([az, z]) => {
+      if (!simP99[az])   simP99[az]   = [];
+      if (!simSpill[az]) simSpill[az] = [];
+      simP99[az].push(z.p99 || 0);
+      simSpill[az].push(z.spill || 0);
+      if (simP99[az].length   > 60) simP99[az].shift();
+      if (simSpill[az].length > 60) simSpill[az].shift();
+    });
+
+    const azList = Object.keys(simP99).sort();
+
+    simP99Chart.data.labels   = [...simLabels];
+    simP99Chart.data.datasets = azList.map(az => ({
+      label: azLabel(az), data: [...simP99[az]],
+      borderColor: azColor(az), backgroundColor: azColor(az)+'18',
+      borderWidth: 2, pointRadius: 1.5, tension: 0.3, fill: false,
+    }));
+    simP99Chart.update('none');
+
+    simSpillChart.data.labels   = [...simLabels];
+    simSpillChart.data.datasets = azList.map(az => ({
+      label: azLabel(az), data: [...simSpill[az]],
+      backgroundColor: azColor(az)+'99', borderColor: azColor(az), borderWidth: 1,
+    }));
+    simSpillChart.update('none');
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Simulation — control
+  // ──────────────────────────────────────────────────────────
+  let simPollInt  = null;
+  let simTimerInt = null;
+  let simStart    = null;
+  let lastSeenMetricsCount = 0;
+
+  function updatePhases(phase) {
+    const idx = PHASE_ORDER.indexOf(phase);
+    PHASE_ORDER.forEach((p, i) => {
+      const el = document.getElementById('ph-'+p);
+      if (!el) return;
+      el.className = 'phase' + (i < idx ? ' done' : i === idx ? ' active' : '');
+    });
+
+    const info = document.getElementById('simInfo');
+    const copy = PHASE_COPY[phase] || '';
+    if (copy) { info.className = 'sim-info visible'; info.innerHTML = copy; }
+    else       { info.className = 'sim-info'; }
+  }
+
+  async function pollSim() {
+    try {
+      const r   = await fetch('/api/simulate/status');
+      const sim = await r.json();
+
+      updatePhases(sim.phase);
+
+      // Feed any new snapshots to charts
+      if (sim.latestMetrics?.length) {
+        const newCount = sim.metricsCount;
+        if (newCount > lastSeenMetricsCount) {
+          sim.latestMetrics.forEach(pushSimSnapshot);
+          lastSeenMetricsCount = newCount;
+        }
+      }
+
+      if (sim.phase === 'complete' || sim.phase === 'idle' || sim.phase === 'error') {
+        clearSimIntervals();
+        document.getElementById('startSimBtn').disabled = false;
+        document.getElementById('stopSimBtn').disabled  = true;
+        document.getElementById('simTimer').textContent  = '';
+
+        if (sim.phase === 'complete' && sim.summary) {
+          showSummary(sim.summary);
+        }
+      }
+    } catch (err) { console.error('[simPoll]', err); }
+  }
+
+  function clearSimIntervals() {
+    if (simPollInt)  { clearInterval(simPollInt);  simPollInt  = null; }
+    if (simTimerInt) { clearInterval(simTimerInt); simTimerInt = null; }
+  }
+
+  async function startSim() {
+    const targetAZ = document.getElementById('scenarioSel').value;
+
+    // Reset charts
+    simLabels = {}; simP99 = {}; simSpill = {};
+    simLabels = [];
+    lastSeenMetricsCount = 0;
+    simP99Chart.data.labels   = []; simP99Chart.data.datasets   = []; simP99Chart.update();
+    simSpillChart.data.labels = []; simSpillChart.data.datasets = []; simSpillChart.update();
+    document.getElementById('simSummary').classList.remove('visible');
+    document.getElementById('cmpCard').style.display = 'none';
+
+    try {
+      const r = await fetch('/api/simulate/start', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ targetAZ }),
+      });
+      const d = await r.json();
+      if (!r.ok) { alert(d.error || 'Failed to start'); return; }
+
+      document.getElementById('startSimBtn').disabled = true;
+      document.getElementById('stopSimBtn').disabled  = false;
+
+      simStart    = Date.now();
+      simTimerInt = setInterval(() => {
+        const s = Math.floor((Date.now() - simStart) / 1000);
+        document.getElementById('simTimer').textContent = `⏱ ${s}s elapsed`;
+      }, 1000);
+
+      simPollInt = setInterval(pollSim, SIM_POLL_MS);
+      pollSim(); // immediate
+    } catch (err) { alert('Error: ' + err); }
+  }
+
+  async function stopSim() {
+    clearSimIntervals();
+    await fetch('/api/simulate/stop', { method:'POST' });
+    document.getElementById('startSimBtn').disabled = false;
+    document.getElementById('stopSimBtn').disabled  = true;
+    document.getElementById('simTimer').textContent = '';
+    updatePhases('idle');
+    document.getElementById('simInfo').className = 'sim-info';
+  }
+
+  function showSummary(summary) {
+    // Compute stats from chart data
+    const allP99s = Object.values(simP99).flat();
+    const maxP99  = allP99s.length ? Math.max(...allP99s).toFixed(0) : '—';
+    const spillCount = Object.values(simSpill).flat().filter(v => v > 0).length;
+    const dur = summary.durationSeconds || '—';
+
+    document.getElementById('sumStats').innerHTML = [
+      [dur + 's', 'Total duration'],
+      [maxP99 + 'ms', 'Peak p99 during fault'],
+      [spillCount, 'Periods with active rerouting'],
+      ['✓', 'SLO restored by AI policy'],
+    ].map(([v, l]) => `
+      <div class="summary-stat" style="text-align:center;">
+        <div class="sum-stat-val">${v}</div>
+        <div class="sum-stat-lbl">${l}</div>
+      </div>`).join('');
+
+    document.getElementById('simSummary').classList.add('visible');
+
+    // Comparison table
+    document.getElementById('cmpBody').innerHTML = [
+      ['Recovery method',          'Auto — spill weighted by capacity', 'No automatic recovery'],
+      ['Peak latency during fault', maxP99 + 'ms', 'Stays degraded'],
+      ['Collateral zone impact',   'Minimal (capacity-weighted)',       'N/A'],
+      ['Manual action needed',     'None',                              'Yes — engineer required'],
+    ].map(([m, ai, rule]) => `
+      <tr>
+        <td>${m}</td>
+        <td style="text-align:right;" class="cmp-ai">${ai}</td>
+        <td style="text-align:right;" class="cmp-rule">${rule}</td>
+      </tr>`).join('');
+
+    document.getElementById('cmpCard').style.display = 'block';
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Init
+  // ──────────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    initDashChart();
+    initSimCharts();
+    refreshAll();
+    setInterval(refreshAll, POLL_MS);
+  });
+</script>
+</body>
+</html>
