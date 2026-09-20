@@ -1,15 +1,17 @@
-ZoneHeal
+# ZoneHeal
 
 A routing policy that can detect when a zone is slow but still healthy, then explain what it did and why it cost money.
 
-Live: http://54.79.89.181:3000/
-Repo: https://github.com/aaryaupadhya12/Z-heal
+**Live:** http://54.79.89.181:3000/
+**Repo:** https://github.com/aaryaupadhya12/Z-heal
 
 Built for First Commit, AWS × WeMakeDevs, 17–20 September 2026.
 
-The problem
+---
 
-Imagine someone in India selling sweets and pickles online. Her customers are mostly Indians abroad, especially in the US and Australia. Her application runs across multiple Availability Zones.
+## The problem
+
+Say you sell sweets and pickles online from India. Your customers are mostly Indians abroad, especially in the US and Australia. Your application runs across multiple Availability Zones.
 
 Then Diwali arrives. Traffic increases several times over and one zone starts getting slow.
 
@@ -17,11 +19,13 @@ It is not down. Health checks are still green. Endpoint counts are still balance
 
 But customers in that zone are waiting several seconds for pages to load, and some leave.
 
-The owner did not build the infrastructure herself. A consultancy set it up and now only handles maintenance. If something goes wrong at 3am, there is nobody to call. Later, she still has to understand what happened and why the bill changed.
+You did not build the infrastructure yourself. A consultancy set it up and now only handles maintenance. If something goes wrong at 3am, there is nobody to call. Later, you still have to understand what happened and why the bill changed.
 
 ZoneHeal watches latency instead of just endpoint counts. When a zone becomes slow, it moves some traffic away and explains what happened, what it cost, and why it made that decision.
 
-What AWS already does
+---
+
+## What AWS already does
 
 ZoneHeal is not trying to replace AWS's existing routing.
 
@@ -39,68 +43,76 @@ Making health checks more aggressive does not solve the problem either. Health c
 
 ZoneHeal treats this as a gradual problem and responds gradually.
 
-What we built
+---
+
+## What we built
 
 ZoneHeal uses a reinforcement learning policy that looks at three signals every minute:
 
-Signal	Question
-Utilisation	How full is the zone?
-Latency ratio	Was the zone slow compared with its SLO?
-Spare capacity	Can another zone handle more traffic?
+| Signal | Question |
+|---|---|
+| Utilisation | How full is the zone? |
+| Latency ratio | Was the zone slow compared with its SLO? |
+| Spare capacity | Can another zone handle more traffic? |
 
 This produces 45 states:
 
+```
 5 utilisation bands × 3 latency bands × 3 spare capacity bands
+```
 
 Each state has a score for each action. The router chooses the highest scoring action.
 
 The actions determine how much traffic should be moved:
 
+```
 0%, 10%, 25%, or 50%
+```
 
-Training data
+### Training data
 
 The policy was trained using the Huawei Public Cloud Trace 2025 dataset, covering 31 days from Region 2.
 
 We treat its four clusters as Availability Zones and use real request arrivals, pod counts, service times and cold starts. The failures are injected into this real workload.
 
-What the policy learned
-              latency: FINE     | NEAR SLO   | OVER SLO
+### What the policy learned
+
+```
+              latency: FINE      | NEAR SLO   | OVER SLO
               spare:   lo mid hi | lo mid hi  | lo mid hi
 
-u0  quiet        0  0   1   |  0  0   0  |  0  3   3
-u1  light        0  0   0   |  0  0   0  |  0  1   3
-u2  moderate     0  0   0   |  0  0   0  |  0  2   3
-u3  busy         2  0   0   |  2  0   0  |  1  0   0
-u4  full         2  0   0   |  2  0   0  |  3  0   0
+u0  quiet         0  0   1  |  0  0   0  |  0  3   3
+u1  light         0  0   0  |  0  0   0  |  0  1   3
+u2  moderate      0  0   0  |  0  0   0  |  0  2   3
+u3  busy          2  0   0  |  2  0   0  |  1  0   0
+u4  full          2  0   0  |  2  0   0  |  3  0   0
+```
 
 The policy discovered four useful behaviours:
 
-Quiet and fast: stay local. There is no reason to pay for cross zone traffic.
-
-Slow but not busy: move some traffic. This is the brownout case that endpoint based routing cannot see.
-
-Busy: move traffic even if latency has not crossed the SLO yet.
-
-No spare capacity elsewhere: keep traffic where it is. Moving traffic into another full zone does not help.
+- **Quiet and fast:** stay local. There is no reason to pay for cross zone traffic.
+- **Slow but not busy:** move some traffic. This is the brownout case that endpoint based routing cannot see.
+- **Busy:** move traffic even if latency has not crossed the SLO yet.
+- **No spare capacity elsewhere:** keep traffic where it is. Moving traffic into another full zone does not help.
 
 28 of the 45 states were visited often enough during training to learn a different action. The remaining 17 use the default action of staying local.
 
-Results
+---
 
-Results are from held out test days across five seeds.
+## Results
 
-Cross zone transfer is priced using AWS's published per GB rate.
+Results are from held out test days across five seeds. Cross zone transfer is priced using AWS's published per GB rate.
 
-Condition	Agent	p99 (ms)	₹/hr	% local
-Brownout	ZoneHeal	2221.7	69.0	72.4
-Brownout	Round robin	2696.1	200.6	24.4
-Brownout	AWS zone aware	2910.5	21.8	91.8
-Brownout	Force local	3151.0	0.0	100.0
-Normal	ZoneHeal	728.9	9.4	95.6
-Normal	Round robin	730.1	200.6	24.4
-Normal	AWS zone aware	728.8	21.8	91.8
-Normal	Force local	728.4	0.0	100.0
+| Condition | Agent | p99 (ms) | ₹/hr | % local |
+|---|---|---|---|---|
+| Brownout | **ZoneHeal** | **2221.7** | 69.0 | 72.4 |
+| Brownout | Round robin | 2696.1 | 200.6 | 24.4 |
+| Brownout | AWS zone aware | 2910.5 | 21.8 | 91.8 |
+| Brownout | Force local | 3151.0 | 0.0 | 100.0 |
+| Normal | **ZoneHeal** | **728.9** | 9.4 | 95.6 |
+| Normal | Round robin | 730.1 | 200.6 | 24.4 |
+| Normal | AWS zone aware | 728.8 | 21.8 | 91.8 |
+| Normal | Force local | 728.4 | 0.0 | 100.0 |
 
 The important part is what happens in the two conditions.
 
@@ -112,35 +124,38 @@ ZoneHeal moves more traffic away from the degraded zone. Its p99 is 24% lower th
 
 The fact that the policies are essentially tied during normal operation is important. ZoneHeal only changes its behaviour when the additional signals actually indicate a problem.
 
-The baseline
+### The baseline
 
-We did not compare against a simple round robin implementation.
+The AWS baseline is not an approximation.
 
-We ported Envoy's zone aware routing from envoyproxy/envoy v1.28.0 into Python. The implementation includes the integer scaled share calculation, both routing modes, residual capacity spilling, early exit conditions and panic mode.
+We ported Envoy's zone aware routing from `envoyproxy/envoy` v1.28.0 into Python. The implementation includes the integer scaled share calculation, both routing modes, residual capacity spilling, early exit conditions and panic mode.
 
 We validated the implementation against Envoy's worked examples and a published Envoy issue.
 
-Deployment
+---
+
+## Deployment
 
 The AWS deployment uses real requests, latency measurements and cross zone traffic.
 
 The workload is generated rather than production traffic, and the failure is an endpoint that can be made slow on command.
 
+```
                     Internet
                        |
                        v
              +----------------------+
-             |    Router service     |
-             |  3 Fargate tasks      |
-             |  45 state policy      |
-             +----+------+------+----+
+             |    Router service    |
+             |  3 Fargate tasks     |
+             |  45 state policy     |
+             +----+------+------+---+
                   |      |      |
                   v      v      v
               backend  backend  backend
                 AZ-2a    AZ-2b    AZ-2c
                   \        |       /
                    \       |      /
-                     EMF logs
+                  structured logs
                         |
                         v
                    CloudWatch
@@ -160,18 +175,23 @@ The workload is generated rather than production traffic, and the failure is an 
              SES
               |
           dashboard
-AWS services
-Service	Role
-ECS on Fargate	Runs the routers, backends, load generator and dashboard
-Service Connect	Service discovery between routers and backends
-S3	Stores the trained policy, incident receipts and watcher state
-CloudWatch	Collects latency, request count, cross zone bytes and cost metrics
-CloudWatch Alarms + EventBridge + Lambda	Provides the runtime fallback mechanism
-Bedrock	Converts measured results into a plain English explanation
-SES	Sends incident explanations by email
-VPC, IGW, security groups, IAM	Provides the network and access control
-ECR	Stores the container images
-The guardrail
+```
+
+### AWS services
+
+| Service | Role |
+|---|---|
+| ECS on Fargate | Runs the routers, backends, load generator and dashboard |
+| Service Connect | Service discovery between routers and backends |
+| S3 | Stores the trained policy, incident receipts and watcher state |
+| CloudWatch | Collects latency, request count, cross zone bytes and cost metrics |
+| CloudWatch Alarms + EventBridge + Lambda | Provides the runtime fallback mechanism |
+| Bedrock | Converts measured results into a plain English explanation |
+| SES | Sends incident explanations by email |
+| VPC, IGW, security groups, IAM | Provides the network and access control |
+| ECR | Stores the container images |
+
+### The guardrail
 
 The learned policy does not run without a fallback.
 
@@ -181,7 +201,7 @@ When it fires, the routers fall back to rule based routing within ten seconds.
 
 If the CloudWatch call itself fails, the router keeps its current mode rather than making a decision using missing control plane data.
 
-One deployment detail
+### One deployment detail
 
 Envoy's zone aware routing requires at least twice the number of Availability Zones in destination endpoints.
 
@@ -189,7 +209,9 @@ Our AWS deployment is below that threshold, so AWS disables zone aware routing a
 
 The two environments are kept separate in the comparison.
 
-The receipt
+---
+
+## The receipt
 
 ZoneHeal does more than move traffic.
 
@@ -197,76 +219,87 @@ When it spends money moving traffic between zones, it records why.
 
 For example:
 
-Zone C slowed to about 745ms while its health checks were still passing. The system moved half of its traffic to the other zones, which were responding normally. The transfer cost ₹0.0005.
+> Zone C slowed to about 745ms while its health checks were still passing. The system moved half of its traffic to the other zones, which were responding normally. The transfer cost ₹0.0005.
 
 The numbers come directly from our measurements. Bedrock only turns those measurements into readable sentences.
 
 CloudWatch can show that cross zone traffic increased, but it does not explain why the routing system chose to spend that money or what the decision achieved.
 
-The dashboard also has a chat box that is limited to the user's metrics. A user can ask questions such as:
+The dashboard also has a chat box that is limited to the user's metrics. A user can ask questions such as "Why is Zone C slow?" and get an explanation using the same measured data.
 
-Why is Zone C slow?
+`aws/README.md` contains the complete deployment and demo sequence.
 
-and get an explanation using the same measured data.
+---
 
-aws/README.md contains the complete deployment and demo sequence.
+## What we learned
 
-What we learned
-
-Free capacity alone was not enough.
+**Free capacity alone was not enough.**
 
 A broken zone becomes slow and therefore looks less busy. A policy based only on free capacity can actually send more traffic into the broken zone.
 
 Using free capacity together with recent p99 fixed this.
 
-Shadow mode helped catch integration problems.
+**The router was in shadow mode for two days without us noticing.**
 
-The router ran in shadow mode for two days, calculating the action without actually applying it. This let us debug the rest of the system before allowing the policy to control traffic.
+Shadow mode lets the rule act and only logs what the policy would have done. So the policy computed the correct action every minute and discarded it. Cross zone bytes stayed at zero and nothing errored. We assumed the routing logic was broken and debugged everything downstream of it first.
 
-Change detection needs a stable comparison window.
+**The policy loader checked shape but not identity.**
+
+A 216 state placeholder file containing random numbers passed every validation, because 216 matched its own table length. The router would have served decisions from noise without any error. It now refuses any file that is not 45 states.
+
+**Change detection needs a stable comparison window.**
 
 When every training iteration used a different random window, the detector produced 43 false alarms before a failure was injected. Keeping the window fixed removed those false alarms.
 
-Limitations
+---
+
+## Limitations
 
 There are several limitations to the current evaluation.
 
-The evaluation uses one dataset and one region. The AWS deployment demonstrates that the policy works as real software, but it is not a production scale test.
-The AWS workload is generated and the failure is manually controlled.
-Half of the training iterations included a brownout, so the policy was trained on the same type of condition used during evaluation.
-CAPACITY is currently a declared backend constant rather than a measured service rate. Latency is measured, while utilisation is nominal.
-The cost numbers are tiny at demo scale. The measurement pipeline is end to end, but the traffic volume is not production scale.
-The latency model uses a single server queue approximation with p99 estimated as 4.6 × mean.
-Overload occurs in roughly 3% of minutes in the dataset, so routing decisions only matter during a small part of the workload.
-Prior work
+- The evaluation uses one dataset and one region. The AWS deployment demonstrates that the policy works as real software, but it is not a production scale test.
+- The AWS workload is generated and the failure is manually controlled.
+- Half of the training iterations included a brownout, so the policy was trained on the same type of condition used during evaluation.
+- `CAPACITY` is currently a declared backend constant rather than a measured service rate. Latency is measured, while utilisation is nominal.
+- The cost numbers are tiny at demo scale. The measurement pipeline is end to end, but the traffic volume is not production scale.
+- The latency model uses a single server queue approximation with p99 estimated as 4.6 × mean.
+- Overload occurs in roughly 3% of minutes in the dataset, so routing decisions only matter during a small part of the workload.
 
-The reinforcement learning harness in Harness/ existed before the hackathon. It was originally built as a learning exercise around FrozenLake and Taxi v3 and is included as a dependency for the training code.
+---
+
+## Prior work
+
+The reinforcement learning harness in `Harness/` existed before the hackathon. It was originally built as a learning exercise around FrozenLake and Taxi v3 and is included as a dependency for the training code.
 
 The work completed during the event includes:
 
-Routing environment
-State encoding and reward
-Envoy baseline port
-AWS deployment
-Live router state encoder and spill logic
-Observability and guardrail system
-Watcher
-Dashboard
+- Routing environment
+- State encoding and reward
+- Envoy baseline port
+- AWS deployment
+- Live router state encoder and spill logic
+- Observability and guardrail system
+- Watcher
+- Dashboard
 
 AI coding tools used: Claude and GitHub Copilot. Usage is attributed per commit.
 
-Credits
+---
 
-Dataset: Huawei Public Cloud Trace 2025, CC BY 4.0, Serverless Cold Starts and Where to Find Them, EuroSys 2025
+## Credits
 
-Baseline: Python port of Envoy zone aware routing, envoyproxy/envoy v1.28.0, Apache 2.0
+**Dataset:** Huawei Public Cloud Trace 2025, CC BY 4.0, *Serverless Cold Starts and Where to Find Them*, EuroSys 2025
 
-Feature under study: Amazon ECS Service Connect zone aware routing
+**Baseline:** Python port of Envoy zone aware routing, `envoyproxy/envoy` v1.28.0, Apache 2.0
 
-Team
+**Feature under study:** Amazon ECS Service Connect zone aware routing
 
-Aarya Upadhya
+---
+
+## Team
+
+**Aarya Upadhya**
 RL environment and policy, Envoy port, router state encoder and spill logic, CloudWatch metrics, watcher and Bedrock/SES path
 
-Anshull M Udyavar
+**Anshull M Udyavar**
 Dashboard, AWS infrastructure and deployment, CloudWatch dashboard and guardrail wiring, load generation
