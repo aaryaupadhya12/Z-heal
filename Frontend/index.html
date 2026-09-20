@@ -827,7 +827,7 @@
       <div class="chat-avatar">🤖</div>
       <div>
         <div class="chat-name">AI Assistant</div>
-        <div class="chat-sub">Amazon Bedrock · Claude 3.5 Sonnet</div>
+        <div class="chat-sub">Amazon Bedrock</div>
       </div>
       <div class="chat-online">
         <div class="status-dot" style="width:6px;height:6px;"></div>
@@ -863,7 +863,7 @@
   <div class="metrics-col dash-col">
     <div class="metrics-hd">
       <div>
-        <div class="metrics-title">System Health</div>
+        <div class="metrics-title">System Dashboard</div>
         <div class="metrics-sub" id="metaUpdated">Fetching…</div>
       </div>
       <button class="btn btn-ghost" onclick="refreshAll()" style="font-size:12px;">↺ Refresh</button>
@@ -950,15 +950,15 @@
       <div class="risk-box-title">Routing Mode</div>
       <div class="mode-btn-row">
         <button class="mode-btn" id="mode-policy" onclick="setMode('policy')">
-          <span>🤖 AI Policy</span>
+          <span>Z-Heal</span>
           <span class="mode-tag">Active control</span>
         </button>
         <button class="mode-btn" id="mode-shadow" onclick="setMode('shadow')">
-          <span>👁 Shadow</span>
-          <span class="mode-tag">AI watches only</span>
+          <span>Shadow</span>
+          <span class="mode-tag">Only Watches</span>
         </button>
         <button class="mode-btn" id="mode-rule" onclick="setMode('rule')">
-          <span>📋 Rule-based</span>
+          <span>Rule-based</span>
           <span class="mode-tag">Deterministic fallback</span>
         </button>
       </div>
@@ -1006,7 +1006,7 @@
   <div class="phases" id="phaseBar">
     <div class="phase" id="ph-baseline"><div class="ph-icon">1</div><div class="ph-name">Baseline</div></div>
     <div class="phase" id="ph-fault">   <div class="ph-icon">⚡</div><div class="ph-name">Fault</div></div>
-    <div class="phase" id="ph-policy">  <div class="ph-icon">🤖</div><div class="ph-name">AI Heals</div></div>
+    <div class="phase" id="ph-policy">  <div class="ph-icon">🤖</div><div class="ph-name">Policy Heals</div></div>
     <div class="phase" id="ph-recovery"><div class="ph-icon">✓</div><div class="ph-name">Recovery</div></div>
     <div class="phase" id="ph-complete"><div class="ph-icon">🎉</div><div class="ph-name">Complete</div></div>
   </div>
@@ -1020,7 +1020,7 @@
       <div class="cc-hd">
         <div>
           <div class="cc-title">Response Time (p99)</div>
-          <div class="cc-sub">Watch it spike when the fault hits, then recover when the AI takes over</div>
+          <div class="cc-sub">Watch it spike when the fault hits, then recover when Z-Heal takes over</div>
         </div>
       </div>
       <canvas id="simP99Canvas" height="170"></canvas>
@@ -1029,27 +1029,14 @@
       <div class="cc-hd">
         <div>
           <div class="cc-title">Traffic Rerouted</div>
-          <div class="cc-sub">Fraction of traffic the AI is diverting away from the affected zone</div>
+          <div class="cc-sub">Fraction of traffic Z-Heal is diverting away from the affected zone</div>
         </div>
       </div>
       <canvas id="simSpillCanvas" height="170"></canvas>
     </div>
   </div>
 
-  <!-- Comparison table -->
-  <div class="chart-card" id="cmpCard" style="display:none;">
-    <div class="cc-title" style="margin-bottom:10px;">AI Policy vs. Rule-Based Routing</div>
-    <table class="cmp-table">
-      <thead>
-        <tr>
-          <th style="text-align:left;">Metric</th>
-          <th style="text-align:right;">ZoneHeal AI</th>
-          <th style="text-align:right;">Rule-based</th>
-        </tr>
-      </thead>
-      <tbody id="cmpBody"></tbody>
-    </table>
-  </div>
+
 
   <!-- Summary -->
   <div class="summary" id="simSummary">
@@ -1081,13 +1068,13 @@
 
   const PHASE_COPY = {
     idle:     '',
-    starting: '⏳ Preparing — setting all routers to shadow mode…',
-    baseline: '📊 Collecting baseline data — recording normal system behaviour for 15 seconds…',
-    fault:    '⚡ Fault injected. One zone is now experiencing a brownout. Watch the p99 latency spike on the chart.',
-    policy:   '🤖 AI policy active — ZoneHeal is detecting the fault and rerouting traffic. Watch the spill bars rise and latency recover.',
-    recovery: '💚 Lifting the fault — brownout removed, restoring normal routing…',
-    complete: '✅ Done! The AI policy detected the fault, rerouted traffic, and maintained your SLO.',
-    error:    '❌ Simulation error. The system has been restored to safe mode.',
+    starting: 'Preparing — setting all routers to shadow mode…',
+    baseline: 'Collecting baseline data — recording normal system behaviour for 15 seconds…',
+    fault:    'Fault injected. One zone is now experiencing a brownout. Watch the p99 latency spike on the chart.',
+    policy:   'Policy active — Z-Heal is detecting the fault and rerouting traffic. Watch the spill bars rise and latency recover.',
+    recovery: 'Lifting the fault — brownout removed, restoring normal routing…',
+    complete: 'Done! The policy detected the fault, rerouted traffic, and maintained your SLO.',
+    error:    'Simulation error. The system has been restored to safe mode.',
   };
 
   // ──────────────────────────────────────────────────────────
@@ -1261,7 +1248,7 @@
     const spill  = cw.anySpilling;
     const mode   = zones[0]?.mode;
 
-    const modePillMap = { policy: ['pill-ok','🤖 AI Policy'], shadow: ['pill-info','👁 Shadow'], rule: ['pill-warn','📋 Rule-based'] };
+    const modePillMap = { policy: ['pill-ok','Z-Heal'], shadow: ['pill-info','Shadow'], rule: ['pill-warn','Rule-based'] };
     const [mCls, mLbl] = modePillMap[mode] || ['pill-info','—'];
 
     document.getElementById('pillRow').innerHTML = [
@@ -1586,7 +1573,6 @@
     simP99Chart.data.labels   = []; simP99Chart.data.datasets   = []; simP99Chart.update();
     simSpillChart.data.labels = []; simSpillChart.data.datasets = []; simSpillChart.update();
     document.getElementById('simSummary').classList.remove('visible');
-    document.getElementById('cmpCard').style.display = 'none';
 
     try {
       const r = await fetch('/api/simulate/start', {
@@ -1632,7 +1618,7 @@
       [dur + 's', 'Total duration'],
       [maxP99 + 'ms', 'Peak p99 during fault'],
       [spillCount, 'Periods with active rerouting'],
-      ['✓', 'SLO restored by AI policy'],
+      ['✓', 'SLO restored by Z-Heal'],
     ].map(([v, l]) => `
       <div class="summary-stat" style="text-align:center;">
         <div class="sum-stat-val">${v}</div>
@@ -1640,21 +1626,6 @@
       </div>`).join('');
 
     document.getElementById('simSummary').classList.add('visible');
-
-    // Comparison table
-    document.getElementById('cmpBody').innerHTML = [
-      ['Recovery method',          'Auto — spill weighted by capacity', 'No automatic recovery'],
-      ['Peak latency during fault', maxP99 + 'ms', 'Stays degraded'],
-      ['Collateral zone impact',   'Minimal (capacity-weighted)',       'N/A'],
-      ['Manual action needed',     'None',                              'Yes — engineer required'],
-    ].map(([m, ai, rule]) => `
-      <tr>
-        <td>${m}</td>
-        <td style="text-align:right;" class="cmp-ai">${ai}</td>
-        <td style="text-align:right;" class="cmp-rule">${rule}</td>
-      </tr>`).join('');
-
-    document.getElementById('cmpCard').style.display = 'block';
   }
 
   // ──────────────────────────────────────────────────────────
