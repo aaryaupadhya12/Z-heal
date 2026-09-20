@@ -667,7 +667,7 @@ app.post("/api/brownout", async (req, res) => {
   res.status(502).json({ error: "no router answered" });
 });
 
-app.post("/api/explain", async (_req, res) => {
+app.post("/api/explain", async (req, res) => {
   if (tooMany(req.ip, 5)) {
     return res.status(429).json({ error: "try again in a little while" });
   }
