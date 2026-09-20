@@ -37,8 +37,26 @@ const ROUTERS = [
   process.env.ROUTER_3,
 ].filter(Boolean);
 
+// ---------------------------------------------------------------
+// Rate limiting and off-topic filtering
+// ---------------------------------------------------------------
+
+const hits = {};                 // ip -> [timestamps]
+const WINDOW = 3600000;          // one hour
+
+function tooMany(ip, max) {
+  const now = Date.now();
+  hits[ip] = (hits[ip] || []).filter(t => now - t < WINDOW);
+
+  if (hits[ip].length >= max) return true;
+
+  hits[ip].push(now);
+  return false;
+}
+const ON_TOPIC = /\b(zone|zones|latency|slow|fast|traffic|cost|costs|spend|spending|rupee|bill|route|routing|reroute|health|healthy|request|requests|promise|limit|incident|aws|region|utilisation|utilization|busy|policy|mode|p99|spill)\b/i;
+const OFF_TOPIC = /ignore (previous|above|all)|system prompt|your instructions|write.{0,20}(code|script|function|poem|essay)|pretend|roleplay|jailbreak|repeat (after|the)|as an ai/i;
 // Nova Micro: cheap, and it needs no use-case form.
-const MODEL = "apac.amazon.nova-micro-v1:0";
+const MODEL = "apac.amazon.nova-pro-v1:0";
 
 const SLO_MS = 200;
 const USD_PER_GB = 0.02;           // $0.01 out + $0.01 in
@@ -132,9 +150,6 @@ async function setBrownout(az, on) {
   return null;
 }
 
-// ---------------------------------------------------------------
-// The numbers, from CloudWatch
-// ---------------------------------------------------------------
 
 async function readMetrics(minutes) {
   const end = new Date();
@@ -212,9 +227,6 @@ async function updateSpend() {
   }
 }
 
-// ---------------------------------------------------------------
-// Watching
-// ---------------------------------------------------------------
 
 async function poll() {
   const snapshot = { at: new Date().toISOString(), zones: {} };
@@ -422,13 +434,21 @@ function mailHtml(facts, explanation) {
       <p style="color:#d5dbdb;line-height:1.6;font-size:15px;">${explanation}</p>
       <hr style="border:none;border-top:1px solid #2a3f55;margin:16px 0;">
       <table style="width:100%;border-collapse:collapse;">
-        ${row("Zone affected", facts.slowZone || "-")}
-        ${row("Slowest response", facts.slowLatencyMs + " ms")}
-        ${row("Normally", (facts.normalLatencyMs || "-") + " ms")}
+              ${row("Zone affected",
+              facts.slowZone
+                ? "Zone " + facts.slowZone.slice(-1).toUpperCase()
+                : "nothing slow right now")}
+        ${row("Slowest response",
+              facts.slowLatencyMs == null ? "—" : facts.slowLatencyMs + " ms")}
+        ${row("Normally",
+              facts.normalLatencyMs == null ? "—" : facts.normalLatencyMs + " ms")}
         ${row("Data moved between zones", (facts.bytesMoved / 1e6).toFixed(2) + " MB")}
         ${row("Spent", "₹" + facts.rupeesSpent)}
         ${row("Requests kept within the promise",
-              facts.requestsWithinPromise + " of " + facts.requests)}
+              facts.requestsWithinPromise == null
+                ? "not measured yet"
+                : facts.requestsWithinPromise.toLocaleString()
+                  + " of " + facts.requests.toLocaleString())}
       </table>
       <p style="color:#5a7a90;font-size:11px;margin:20px 0 0;">
         Sent by ZoneHeal. Change your limit on the dashboard.
@@ -648,25 +668,38 @@ app.post("/api/brownout", async (req, res) => {
 });
 
 app.post("/api/explain", async (_req, res) => {
+  if (tooMany(req.ip, 5)) {
+    return res.status(429).json({ error: "try again in a little while" });
+  }
+
   res.json(await explain());
 });
 
 // Her question, answered from her own numbers.
 app.post("/api/chat", async (req, res) => {
   const question = String(req.body.message || "").trim().slice(0, 500);
+  if (!ON_TOPIC.test(question)) {
+  return res.json({
+    message: "I can only answer questions about your zones — how they're "
+           + "responding, what the routing is doing, and what it's costing.",
+  });
+}
 
   if (!question) return res.status(400).json({ error: "ask something" });
 
-  const cutoff = Date.now() - 3600000;
-  chatTimes = chatTimes.filter(t => t > cutoff);
+  // Not a question about her system.
+  if (OFF_TOPIC.test(question)) {
+    return res.json({
+      message: "I can only answer questions about your zones — how they're "
+             + "responding, what the routing is doing, and what it's costing.",
+    });
+  }
 
-  if (chatTimes.length >= CHAT_LIMIT) {
+  if (tooMany(req.ip, CHAT_LIMIT)) {
     return res.status(429).json({
       error: "that is a lot of questions -- try again in a little while",
     });
   }
-
-  chatTimes.push(Date.now());
 
   const facts = await gatherFacts();
 
@@ -681,7 +714,7 @@ app.post("/api/chat", async (req, res) => {
     chatTurns.push({ q: question, a: answer });
     if (chatTurns.length > 12) chatTurns.shift();
 
-    res.json({ message: answer, questionsLeft: CHAT_LIMIT - chatTimes.length });
+    res.json({ message: answer });
 
   } catch (err) {
     console.log("chat failed: " + (err.message || err));
@@ -690,6 +723,9 @@ app.post("/api/chat", async (req, res) => {
 });
 
 app.post("/api/scenario/start", (req, res) => {
+  if (tooMany(req.ip, 6)) {
+    return res.status(429).json({ error: "too many runs -- give it a rest" });
+  }
   if (sim.running) {
     return res.status(400).json({ error: "one is already running" });
   }
