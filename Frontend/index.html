@@ -1,1642 +1,784 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ZoneHeal — Dashboard</title>
-  <meta name="description" content="ZoneHeal real-time dashboard — monitor and heal your AWS Availability Zone routing with reinforcement learning">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <style>
-    /* ────────────────────────────────────────────────────────────
-       Design tokens — AWS Console palette
-    ──────────────────────────────────────────────────────────── */
-    :root {
-      --bg-base:      #0f1b2d;
-      --bg-card:      #1b2a3b;
-      --bg-raised:    #1f3044;
-      --bg-input:     #16202d;
-      --border:       #2a3f55;
-      --border-light: #3a5065;
-      --text-primary: #d5dbdb;
-      --text-heading: #ffffff;
-      --text-muted:   #8d9ba8;
-      --amber:        #f90;
-      --amber-hover:  #e88b00;
-      --amber-dark:   rgba(255,153,0,.15);
-      --blue:         #0073bb;
-      --blue-dark:    rgba(0,115,187,.15);
-      --green:        #5fb85f;
-      --green-dark:   rgba(29,129,2,.15);
-      --red:          #ff4d4d;
-      --red-dark:     rgba(217,21,21,.15);
-      --yellow:       #f0ab00;
-      --yellow-dark:  rgba(240,171,0,.15);
-      --nav-h:        52px;
-      --radius:       8px;
-      --radius-sm:    5px;
-      --shadow:       0 2px 12px rgba(0,0,0,.4);
-    }
-
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'Inter', -apple-system, sans-serif;
-      background: var(--bg-base);
-      color: var(--text-primary);
-      min-height: 100vh;
-      font-size: 13px;
-      line-height: 1.5;
-      overflow-x: hidden;
-    }
-
-    /* ── Scrollbar ─────────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: var(--bg-input); }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
-
-    /* ── Navigation ────────────────────────────────────────────── */
-    .nav {
-      height: var(--nav-h);
-      background: #0a1420;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      padding: 0 20px;
-      gap: 0;
-      position: sticky;
-      top: 0;
-      z-index: 200;
-    }
-
-    .nav-brand {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      text-decoration: none;
-      margin-right: 28px;
-    }
-
-    .nav-brand-icon {
-      width: 30px;
-      height: 30px;
-      background: var(--amber);
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 15px;
-      flex-shrink: 0;
-    }
-
-    .nav-brand-name {
-      font-weight: 700;
-      font-size: 15px;
-      color: var(--text-heading);
-      letter-spacing: -.2px;
-    }
-
-    .nav-divider {
-      width: 1px;
-      height: 24px;
-      background: var(--border);
-      margin-right: 16px;
-    }
-
-    .nav-tabs {
-      display: flex;
-      gap: 2px;
-    }
-
-    .nav-tab {
-      padding: 6px 14px;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      color: var(--text-muted);
-      font-weight: 500;
-      font-size: 13px;
-      transition: all .15s;
-      border: 1px solid transparent;
-      user-select: none;
-    }
-
-    .nav-tab:hover { color: var(--text-heading); background: var(--bg-card); }
-    .nav-tab.active { color: var(--text-heading); background: var(--bg-card); border-color: var(--border); }
-
-    .nav-right {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .nav-system-status {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--green);
-      transition: background .4s;
-    }
-
-    .nav-updated {
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
-    /* ── Pages ─────────────────────────────────────────────────── */
-    .page { display: none; }
-    .page.active { display: block; }
-
-    /* ── Dashboard 3-column grid ───────────────────────────────── */
-    .dash-grid {
-      display: grid;
-      grid-template-columns: 290px 1fr 275px;
-      height: calc(100vh - var(--nav-h));
-      overflow: hidden;
-    }
-
-    .dash-col {
-      overflow-y: auto;
-      border-right: 1px solid var(--border);
-    }
-
-    .dash-col:last-child { border-right: none; }
-
-    /* ── Chat panel ────────────────────────────────────────────── */
-    .chat-col {
-      display: flex;
-      flex-direction: column;
-      height: calc(100vh - var(--nav-h));
-      overflow: hidden;
-    }
-
-    .chat-header {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-shrink: 0;
-      background: #0d1927;
-    }
-
-    .chat-avatar {
-      width: 34px;
-      height: 34px;
-      background: linear-gradient(135deg, var(--amber), var(--amber-hover));
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      flex-shrink: 0;
-    }
-
-    .chat-name { font-weight: 600; font-size: 13px; color: var(--text-heading); }
-    .chat-sub  { font-size: 11px; color: var(--text-muted); }
-
-    .chat-online {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 11px;
-      color: var(--green);
-    }
-
-    .chat-messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .msg { max-width: 88%; }
-    .msg.user      { align-self: flex-end; }
-    .msg.assistant { align-self: flex-start; }
-
-    @keyframes msgIn {
-      from { opacity: 0; transform: translateY(6px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-
-    .msg { animation: msgIn .2s ease; }
-
-    .msg-bubble {
-      padding: 9px 13px;
-      border-radius: 12px;
-      font-size: 12.5px;
-      line-height: 1.55;
-    }
-
-    .msg.user      .msg-bubble {
-      background: var(--amber);
-      color: #0a1420;
-      font-weight: 500;
-      border-bottom-right-radius: 3px;
-    }
-
-    .msg.assistant .msg-bubble {
-      background: var(--bg-card);
-      color: var(--text-primary);
-      border: 1px solid var(--border);
-      border-bottom-left-radius: 3px;
-    }
-
-    .msg-time {
-      font-size: 10px;
-      color: var(--text-muted);
-      margin-top: 3px;
-      padding: 0 4px;
-    }
-
-    .msg.user .msg-time { text-align: right; }
-
-    .chat-chips {
-      padding: 8px 14px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-      border-top: 1px solid var(--border);
-    }
-
-    .chip {
-      padding: 4px 10px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 11px;
-      cursor: pointer;
-      transition: all .15s;
-      font-family: inherit;
-    }
-
-    .chip:hover { border-color: var(--amber); color: var(--amber); }
-
-    .chat-input-row {
-      padding: 10px 14px;
-      border-top: 1px solid var(--border);
-      display: flex;
-      gap: 7px;
-      flex-shrink: 0;
-      background: #0d1927;
-    }
-
-    .chat-textarea {
-      flex: 1;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 7px 10px;
-      color: var(--text-primary);
-      font-size: 12.5px;
-      font-family: inherit;
-      outline: none;
-      resize: none;
-      transition: border-color .15s;
-    }
-
-    .chat-textarea:focus { border-color: var(--amber); }
-    .chat-textarea::placeholder { color: var(--text-muted); }
-
-    /* ── Generic buttons ───────────────────────────────────────── */
-    .btn {
-      padding: 7px 15px;
-      border-radius: var(--radius-sm);
-      font-size: 12.5px;
-      font-weight: 500;
-      cursor: pointer;
-      border: none;
-      transition: all .15s;
-      font-family: inherit;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      white-space: nowrap;
-    }
-
-    .btn:disabled { opacity: .45; cursor: not-allowed; }
-
-    .btn-amber   { background: var(--amber);   color: #0a1420; }
-    .btn-amber:hover:not(:disabled) { background: var(--amber-hover); }
-
-    .btn-ghost   { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
-    .btn-ghost:hover:not(:disabled) { background: var(--bg-card); }
-
-    .btn-danger  { background: var(--red-dark); color: var(--red); border: 1px solid var(--red); }
-    .btn-danger:hover:not(:disabled) { background: var(--red); color: #fff; }
-
-    .btn-icon { width: 32px; height: 32px; padding: 0; justify-content: center; font-size: 14px; }
-
-    .btn-big {
-      padding: 10px 24px;
-      font-size: 14px;
-      border-radius: var(--radius);
-      font-weight: 600;
-    }
-
-    /* ── Metrics center panel ──────────────────────────────────── */
-    .metrics-col { padding: 16px; overflow-y: auto; }
-
-    .metrics-hd {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-    }
-
-    .metrics-title { font-size: 17px; font-weight: 700; color: var(--text-heading); }
-    .metrics-sub   { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
-
-    /* Status pills row */
-    .pill-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
-
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 5px 11px;
-      border-radius: 14px;
-      font-size: 11.5px;
-      font-weight: 500;
-    }
-
-    .pill-dot { width: 6px; height: 6px; border-radius: 50%; }
-
-    .pill-ok    { background: var(--green-dark);  color: var(--green);  }
-    .pill-ok    .pill-dot { background: var(--green); }
-    .pill-warn  { background: var(--yellow-dark); color: var(--yellow); }
-    .pill-warn  .pill-dot { background: var(--yellow); }
-    .pill-bad   { background: var(--red-dark);    color: var(--red);    }
-    .pill-bad   .pill-dot { background: var(--red); }
-    .pill-info  { background: var(--blue-dark);   color: #48cef7;       }
-    .pill-info  .pill-dot { background: #48cef7; }
-    .pill-amber { background: var(--amber-dark);  color: var(--amber);  }
-    .pill-amber .pill-dot { background: var(--amber); }
-
-    /* Zone cards */
-    .zone-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 14px; }
-
-    .zone-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 13px;
-      transition: border-color .25s;
-    }
-
-    .zone-card.state-healthy  { border-color: #1d8102; }
-    .zone-card.state-elevated { border-color: var(--yellow); }
-    .zone-card.state-critical { border-color: var(--red); }
-
-    .zc-name { font-size: 12.5px; font-weight: 700; color: var(--text-heading); }
-    .zc-az   { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; }
-
-    /* Circular gauge */
-    .gauge-wrap { display: flex; justify-content: center; margin-bottom: 8px; }
-
-    .gauge { position: relative; width: 66px; height: 66px; }
-    .gauge svg { transform: rotate(-90deg); }
-
-    .g-bg   { fill: none; stroke: var(--border); stroke-width: 6; }
-    .g-fill { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .5s ease; }
-
-    .gauge-pct {
-      position: absolute; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 700; color: var(--text-heading);
-    }
-
-    .zc-stats { display: flex; flex-direction: column; gap: 5px; }
-
-    .zc-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-    }
-
-    .zc-label { font-size: 11px; color: var(--text-muted); }
-    .zc-val   { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-
-    .zc-badge {
-      display: inline-block;
-      margin-top: 7px;
-      padding: 2px 8px;
-      border-radius: 10px;
-      font-size: 10px;
-      font-weight: 600;
-    }
-
-    .badge-ok   { background: var(--green-dark);  color: var(--green);  }
-    .badge-warn { background: var(--yellow-dark); color: var(--yellow); }
-    .badge-err  { background: var(--red-dark);    color: var(--red);    }
-
-    .spill-track {
-      height: 3px;
-      background: var(--border);
-      border-radius: 2px;
-      margin-top: 7px;
-      overflow: hidden;
-    }
-
-    .spill-fill {
-      height: 100%;
-      background: var(--amber);
-      border-radius: 2px;
-      transition: width .4s ease;
-    }
-
-    /* Chart card */
-    .chart-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 14px;
-      margin-bottom: 12px;
-    }
-
-    .cc-hd {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      margin-bottom: 10px;
-    }
-
-    .cc-title { font-size: 13px; font-weight: 600; color: var(--text-heading); }
-    .cc-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px; max-width: 320px; }
-
-    .cc-legend { display: flex; gap: 10px; flex-wrap: wrap; }
-    .leg-item  { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); }
-    .leg-dot   { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-
-    /* Cost row */
-    .cost-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 12px 14px;
-    }
-
-    .cost-lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
-    .cost-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-    .cost-val  { font-size: 22px; font-weight: 700; color: var(--text-heading); text-align: right; }
-    .cost-sub  { font-size: 10.5px; color: var(--text-muted); text-align: right; margin-top: 2px; }
-
-    /* ── Risk / Alert panel ─────────────────────────────────────── */
-    .risk-col { padding: 14px; overflow-y: auto; }
-
-    .risk-box {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 14px;
-      margin-bottom: 10px;
-    }
-
-    .risk-box-title {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .6px;
-      color: var(--text-muted);
-      font-weight: 600;
-      margin-bottom: 10px;
-    }
-
-    /* Risk level display */
-    .risk-level-val {
-      font-size: 18px;
-      font-weight: 700;
-      text-align: center;
-      margin-bottom: 10px;
-    }
-
-    .rl-healthy  { color: var(--green); }
-    .rl-elevated { color: var(--yellow); }
-    .rl-high     { color: #ff8c00; }
-    .rl-critical { color: var(--red); }
-
-    .risk-bar-track { height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
-    .risk-bar-fill  { height: 100%; border-radius: 4px; transition: width .5s, background .5s; }
-    .risk-bar-labels {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 3px;
-      font-size: 9.5px;
-      color: var(--text-muted);
-    }
-
-    /* Alert lamp */
-    .lamp-row { display: flex; align-items: center; gap: 11px; }
-
-    .lamp {
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      background: var(--border);
-      border: 2px solid var(--border-light);
-      flex-shrink: 0;
-      transition: all .3s;
-    }
-
-    .lamp.on {
-      background: var(--amber);
-      border-color: var(--amber);
-      box-shadow: 0 0 0 4px var(--amber-dark);
-      animation: lampPulse 1.6s ease-in-out infinite;
-    }
-
-    @keyframes lampPulse {
-      0%, 100% { box-shadow: 0 0 0 4px rgba(255,153,0,.2); }
-      50%       { box-shadow: 0 0 0 9px rgba(255,153,0,.07); }
-    }
-
-    .lamp-text strong { display: block; font-size: 12.5px; color: var(--text-primary); margin-bottom: 1px; }
-    .lamp-text span   { font-size: 11px; color: var(--text-muted); }
-
-    .receipt-box {
-      margin-top: 9px;
-      padding: 9px 11px;
-      background: var(--bg-input);
-      border-radius: 5px;
-      font-size: 11px;
-      color: var(--text-muted);
-      line-height: 1.55;
-      border-left: 3px solid var(--amber);
-      display: none;
-    }
-
-    /* Mode buttons */
-    .mode-btn-row { display: flex; flex-direction: column; gap: 5px; }
-
-    .mode-btn {
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 8px 11px;
-      color: var(--text-primary);
-      font-size: 12px;
-      font-family: inherit;
-      cursor: pointer;
-      transition: all .15s;
-      text-align: left;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .mode-btn:hover { background: var(--bg-raised); border-color: var(--border-light); }
-    .mode-btn.active { border-color: var(--amber); background: var(--amber-dark); }
-    .mode-btn .mode-tag { font-size: 10px; color: var(--text-muted); }
-
-    /* Incidents */
-    .incident-row {
-      padding: 7px 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .incident-row:last-child { border-bottom: none; }
-    .inc-zone { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-    .inc-meta { font-size: 10.5px; color: var(--text-muted); margin-top: 1px; }
-    .inc-cost { font-size: 11px; color: var(--amber); font-weight: 600; }
-
-    /* Spend input */
-    .spend-row { display: flex; gap: 6px; align-items: center; }
-
-    .spend-input {
-      flex: 1;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 6px 9px;
-      color: var(--text-primary);
-      font-size: 12px;
-      font-family: inherit;
-      outline: none;
-    }
-
-    .spend-input:focus { border-color: var(--amber); }
-
-    /* ── Simulate page ──────────────────────────────────────────── */
-    .sim-page {
-      max-width: 1080px;
-      margin: 0 auto;
-      padding: 24px 20px;
-    }
-
-    .sim-hd { margin-bottom: 20px; }
-    .sim-title { font-size: 20px; font-weight: 700; color: var(--text-heading); margin-bottom: 5px; }
-    .sim-desc  { font-size: 13px; color: var(--text-muted); max-width: 580px; line-height: 1.55; }
-
-    .sim-controls {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-bottom: 20px;
-    }
-
-    .sim-select {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 8px 11px;
-      color: var(--text-primary);
-      font-size: 12.5px;
-      font-family: inherit;
-      outline: none;
-      cursor: pointer;
-    }
-
-    .sim-select:focus { border-color: var(--amber); }
-
-    .sim-timer { font-size: 12px; color: var(--text-muted); }
-
-    /* Phase tracker */
-    .phases {
-      display: flex;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 14px 20px;
-      margin-bottom: 16px;
-      overflow-x: auto;
-    }
-
-    .phase { flex: 1; text-align: center; position: relative; min-width: 80px; }
-
-    .phase::after {
-      content: '';
-      position: absolute;
-      top: 14px;
-      left: 50%;
-      width: 100%;
-      height: 2px;
-      background: var(--border);
-      z-index: 0;
-    }
-
-    .phase:last-child::after { display: none; }
-
-    .ph-icon {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: var(--bg-input);
-      border: 2px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      margin: 0 auto 5px;
-      position: relative;
-      z-index: 1;
-      transition: all .3s;
-    }
-
-    .phase.active .ph-icon { background: var(--amber);    border-color: var(--amber); color: #0a1420; }
-    .phase.done   .ph-icon { background: var(--green);    border-color: var(--green); }
-    .phase.done::after     { background: var(--green); }
-
-    .ph-name { font-size: 10.5px; color: var(--text-muted); font-weight: 500; }
-    .phase.active .ph-name { color: var(--amber); }
-    .phase.done   .ph-name { color: var(--green); }
-
-    /* Sim info box */
-    .sim-info {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 12px 14px;
-      font-size: 12.5px;
-      color: var(--text-muted);
-      margin-bottom: 14px;
-      line-height: 1.55;
-      display: none;
-    }
-
-    .sim-info.visible { display: block; }
-
-    /* Sim charts */
-    .sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
-
-    /* Summary */
-    .summary {
-      background: linear-gradient(135deg, #1b2a3b 0%, #0d3d01 100%);
-      border: 1px solid #2d6b02;
-      border-radius: var(--radius);
-      padding: 18px;
-      display: none;
-    }
-
-    .summary.visible { display: block; animation: msgIn .4s ease; }
-
-    .sum-title { font-size: 15px; font-weight: 700; color: var(--green); margin-bottom: 14px; }
-
-    .sum-stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
-
-    .sum-stat-val { font-size: 20px; font-weight: 700; color: var(--text-heading); }
-    .sum-stat-lbl { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
-
-    /* Comparison table */
-    .cmp-table { width: 100%; border-collapse: collapse; }
-    .cmp-table th, .cmp-table td { padding: 8px 10px; font-size: 12px; }
-    .cmp-table thead tr { border-bottom: 1px solid var(--border); }
-    .cmp-table th { font-weight: 500; color: var(--text-muted); }
-    .cmp-table td { border-bottom: 1px solid var(--border); }
-    .cmp-table tbody tr:last-child td { border-bottom: none; }
-    .cmp-ai   { color: var(--green); font-weight: 600; }
-    .cmp-rule { color: var(--red); }
-
-    /* Spinner */
-    .spinner {
-      display: inline-block;
-      width: 13px;
-      height: 13px;
-      border: 2px solid rgba(255,153,0,.25);
-      border-top-color: var(--amber);
-      border-radius: 50%;
-      animation: spin .7s linear infinite;
-      flex-shrink: 0;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Responsive ─────────────────────────────────────────────── */
-    @media (max-width: 1100px) {
-      .dash-grid { grid-template-columns: 260px 1fr 250px; }
-    }
-
-    @media (max-width: 860px) {
-      .dash-grid { grid-template-columns: 1fr; height: auto; }
-      .chat-col { height: 380px; }
-      .zone-row { grid-template-columns: 1fr; }
-      .sim-grid { grid-template-columns: 1fr; }
-      .sum-stats { grid-template-columns: repeat(2,1fr); }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZoneHeal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#141b2b; --card:#1d2638; --input:#181f2e; --line:#2d3950; --line2:#3d4b66;
+  --txt:#c8d3e0; --head:#fff; --mute:#7d8ba3;
+  --amber:#ffa62b; --amber2:#ff8f00; --amberbg:rgba(255,166,43,.14);
+  --blue:#4fc3f7; --bluebg:rgba(79,195,247,.14);
+  --green:#4ade80; --greenbg:rgba(74,222,128,.14);
+  --red:#ff5c7c; --redbg:rgba(255,92,124,.14);
+  --yellow:#fbbf24; --yellowbg:rgba(251,191,36,.14);
+  --purple:#a78bfa;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,-apple-system,sans-serif;background:var(--bg);color:var(--txt);
+  font-size:13px;line-height:1.5;min-height:100vh}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--input)}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+
+/* ── nav ─────────────────────────────────────────────── */
+.nav{height:var(--nav);background:#0a1420;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;padding:0 18px;position:sticky;top:0;z-index:200}
+.brand{display:flex;align-items:center;gap:9px;margin-right:24px}
+.brand-i{width:28px;height:28px;background:var(--amber);border-radius:6px;
+  display:flex;align-items:center;justify-content:center;font-size:14px}
+.brand-n{font-weight:700;font-size:15px;color:var(--head)}
+.tabs{display:flex;gap:2px}
+.tab{padding:6px 14px;border-radius:var(--r2);cursor:pointer;color:var(--mute);
+  font-weight:500;transition:.15s;user-select:none;border:1px solid transparent}
+.tab:hover{color:var(--head);background:var(--card)}
+.tab.active{color:var(--head);background:var(--card);border-color:var(--line)}
+.nav-r{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--mute)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);transition:.4s}
+
+.page{display:none}.page.active{display:block}
+
+/* ── layout ──────────────────────────────────────────── */
+.grid{display:grid;grid-template-columns:300px 1fr 280px;
+  height:calc(100vh - var(--nav));overflow:hidden}
+.col{overflow-y:auto;border-right:1px solid var(--line)}
+.col:last-child{border-right:none}
+.main{padding:18px 20px 28px}
+
+/* ── the greeting strip ──────────────────────────────── */
+.hello{margin-bottom:16px}
+.hello h1{font-size:24px;font-weight:700;color:var(--head);letter-spacing:-.4px;margin-bottom:5px}
+.hello p{font-size:14px;color:var(--txt);line-height:1.55;max-width:600px}
+.hello p b{color:var(--head);font-weight:600}
+
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:16px 0}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px}
+.kpi-l{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);
+  font-weight:600;margin-bottom:5px}
+.kpi-v{font-size:21px;font-weight:700;color:var(--head);line-height:1.1;letter-spacing:-.5px}
+.kpi-s{font-size:10.5px;color:var(--mute);margin-top:3px}
+.kpi.good .kpi-v{color:var(--green)}
+.kpi.bad  .kpi-v{color:var(--red)}
+.kpi.warn .kpi-v{color:var(--yellow)}
+
+/* ── section headings ────────────────────────────────── */
+.sec{display:flex;align-items:baseline;justify-content:space-between;margin:20px 0 9px}
+.sec h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--mute);font-weight:600}
+.sec .hint{font-size:11px;color:var(--mute)}
+
+/* ── zone cards ──────────────────────────────────────── */
+.zones{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.zone{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:13px;transition:border-color .3s;position:relative;overflow:hidden}
+.zone.crit{border-color:var(--red)}
+.zone.warn{border-color:var(--yellow)}
+.zone.ok{border-color:#1d8102}
+.zone::before{content:'';position:absolute;inset:0 0 auto 0;height:2px;background:transparent}
+.zone.crit::before{background:var(--red)}
+.zone-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px}
+.zone-n{font-size:13px;font-weight:700;color:var(--head)}
+.zone-az{font-size:10px;color:var(--mute);margin-top:1px}
+.tag{padding:2px 8px;border-radius:10px;font-size:9.5px;font-weight:600;white-space:nowrap}
+.tag.ok{background:var(--greenbg);color:var(--green)}
+.tag.warn{background:var(--yellowbg);color:var(--yellow)}
+.tag.bad{background:var(--redbg);color:var(--red)}
+.big{font-size:27px;font-weight:700;color:var(--head);letter-spacing:-.8px;line-height:1}
+.big.slow{color:var(--red)}
+.big small{font-size:12px;font-weight:500;color:var(--mute);margin-left:2px;letter-spacing:0}
+.big-l{font-size:10.5px;color:var(--mute);margin-top:4px}
+.zrow{display:flex;justify-content:space-between;font-size:11px;margin-top:9px;
+  padding-top:9px;border-top:1px solid var(--line)}
+.zrow span:first-child{color:var(--mute)}
+.zrow span:last-child{color:var(--txt);font-weight:600}
+.track{height:3px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
+.fill{height:100%;background:var(--amber);border-radius:2px;transition:width .5s}
+
+/* ── cards ───────────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:15px}
+.card-t{font-size:13px;font-weight:600;color:var(--head)}
+.card-s{font-size:11px;color:var(--mute);margin-top:2px}
+.legend{display:flex;gap:11px;flex-wrap:wrap}
+.leg{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--mute)}
+.leg i{width:8px;height:8px;border-radius:50%;display:block}
+
+/* ── right rail ──────────────────────────────────────── */
+.rail{padding:14px}
+.rbox{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:13px;margin-bottom:10px}
+.rbox-t{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute);
+  font-weight:600;margin-bottom:10px}
+.receipt{padding:11px;background:var(--input);border-radius:var(--r2);font-size:11.5px;
+  color:var(--txt);line-height:1.6;border-left:3px solid var(--amber)}
+.receipt-when{font-size:10px;color:var(--mute);margin-top:8px}
+
+.modes{display:flex;flex-direction:column;gap:5px}
+.mode{background:transparent;border:1px solid var(--line);border-radius:var(--r2);
+  padding:8px 11px;color:var(--txt);font-size:12px;font-family:inherit;cursor:pointer;
+  transition:.15s;text-align:left;display:flex;justify-content:space-between;align-items:center}
+.mode:hover{background:var(--input);border-color:var(--line2)}
+.mode.active{border-color:var(--amber);background:var(--amberbg)}
+.mode em{font-size:9.5px;color:var(--mute);font-style:normal}
+
+.limit{display:flex;gap:6px;align-items:center}
+.limit input{flex:1;background:var(--input);border:1px solid var(--line);border-radius:var(--r2);
+  padding:6px 9px;color:var(--txt);font-size:12px;font-family:inherit;outline:none}
+.limit input:focus{border-color:var(--amber)}
+
+.inc{padding:8px 0;border-bottom:1px solid var(--line);display:flex;
+  justify-content:space-between;align-items:flex-start;gap:8px}
+.inc:last-child{border-bottom:none}
+.inc-z{font-size:12px;font-weight:600;color:var(--txt)}
+.inc-m{font-size:10px;color:var(--mute);margin-top:2px}
+.inc-c{font-size:11px;color:var(--amber);font-weight:600;white-space:nowrap}
+.empty{font-size:11.5px;color:var(--mute);text-align:center;padding:12px}
+
+/* ── chat ────────────────────────────────────────────── */
+.chat{display:flex;flex-direction:column;height:calc(100vh - var(--nav));overflow:hidden}
+.chat-h{padding:13px 15px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;gap:10px;background:#0d1927;flex-shrink:0}
+.chat-av{width:32px;height:32px;background:linear-gradient(135deg,var(--amber),var(--amber2));
+  border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.chat-n{font-weight:600;font-size:13px;color:var(--head)}
+.chat-s{font-size:10.5px;color:var(--mute)}
+.chat-live{margin-left:auto;font-size:10.5px;color:var(--green);display:flex;align-items:center;gap:5px}
+.msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.msg{max-width:90%;animation:in .2s ease}
+.msg.me{align-self:flex-end}
+.msg.ai{align-self:flex-start}
+.bub{padding:9px 13px;border-radius:13px;font-size:12.5px;line-height:1.6}
+.msg.me .bub{background:var(--amber);color:#0a1420;font-weight:500;border-bottom-right-radius:3px}
+.msg.ai .bub{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:3px}
+.msg-t{font-size:9.5px;color:var(--mute);margin-top:3px;padding:0 4px}
+.msg.me .msg-t{text-align:right}
+.chips{padding:9px 14px;display:flex;flex-wrap:wrap;gap:5px;border-top:1px solid var(--line)}
+.chip{padding:4px 10px;border-radius:12px;border:1px solid var(--line);background:none;
+  color:var(--mute);font-size:11px;cursor:pointer;transition:.15s;font-family:inherit}
+.chip:hover{border-color:var(--amber);color:var(--amber)}
+.chat-in{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:7px;
+  background:#0d1927;flex-shrink:0}
+.chat-in textarea{flex:1;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r2);padding:7px 10px;color:var(--txt);font-size:12.5px;
+  font-family:inherit;outline:none;resize:none}
+.chat-in textarea:focus{border-color:var(--amber)}
+
+/* ── buttons ─────────────────────────────────────────── */
+.btn{padding:7px 15px;border-radius:var(--r2);font-size:12.5px;font-weight:500;
+  cursor:pointer;border:none;transition:.15s;font-family:inherit;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.amber{background:var(--amber);color:#0a1420}
+.btn.amber:hover:not(:disabled){background:var(--amber2)}
+.btn.ghost{background:none;color:var(--txt);border:1px solid var(--line)}
+.btn.ghost:hover:not(:disabled){background:var(--card)}
+.btn.red{background:var(--redbg);color:var(--red);border:1px solid var(--red)}
+.btn.red:hover:not(:disabled){background:var(--red);color:#fff}
+.btn.sq{width:32px;height:32px;padding:0;justify-content:center}
+.btn.lg{padding:10px 22px;font-size:14px;border-radius:var(--r);font-weight:600}
+
+.spin{width:13px;height:13px;border:2px solid rgba(255,153,0,.25);border-top-color:var(--amber);
+  border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── simulate page ───────────────────────────────────── */
+.sim{max-width:1060px;margin:0 auto;padding:26px 22px}
+.sim h1{font-size:22px;font-weight:700;color:var(--head);margin-bottom:6px;letter-spacing:-.3px}
+.sim .lede{font-size:13.5px;color:var(--mute);max-width:620px;line-height:1.6;margin-bottom:20px}
+.sim-ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:20px}
+select{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);
+  padding:9px 12px;color:var(--txt);font-size:12.5px;font-family:inherit;outline:none;cursor:pointer}
+.steps{display:flex;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r);padding:16px 22px;margin-bottom:14px;overflow-x:auto}
+.step{flex:1;text-align:center;position:relative;min-width:88px}
+.step::after{content:'';position:absolute;top:14px;left:50%;width:100%;height:2px;
+  background:var(--line);z-index:0}
+.step:last-child::after{display:none}
+.step i{width:28px;height:28px;border-radius:50%;background:var(--input);
+  border:2px solid var(--line);display:flex;align-items:center;justify-content:center;
+  font-size:12px;margin:0 auto 6px;position:relative;z-index:1;transition:.3s;font-style:normal}
+.step.on i{background:var(--amber);border-color:var(--amber);color:#0a1420}
+.step.done i{background:var(--green);border-color:var(--green)}
+.step.done::after{background:var(--green)}
+.step span{font-size:10.5px;color:var(--mute);font-weight:500}
+.step.on span{color:var(--amber)}
+.step.done span{color:var(--green)}
+.note{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:13px 15px;font-size:12.5px;color:var(--txt);margin-bottom:14px;
+  line-height:1.6;display:none;border-left:3px solid var(--amber)}
+.note.on{display:block}
+.sim-charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.caveat{font-size:11px;color:var(--mute);margin-top:12px;line-height:1.6;
+  padding:11px 13px;background:var(--input);border-radius:var(--r2)}
+
+@media(max-width:1150px){.grid{grid-template-columns:270px 1fr 260px}}
+@media(max-width:900px){
+  .grid{grid-template-columns:1fr;height:auto}
+  .chat{height:400px}
+  .zones,.kpis,.sim-charts{grid-template-columns:1fr}
+}
+</style>
 </head>
 <body>
 
-<!-- ════════════════════════════════════════════════════════════
-     Navigation
-════════════════════════════════════════════════════════════ -->
 <nav class="nav">
-  <a href="#" class="nav-brand" onclick="return false;">
-    <div class="nav-brand-icon">⚡</div>
-    <span class="nav-brand-name">ZoneHeal</span>
-  </a>
-  <div class="nav-divider"></div>
-  <div class="nav-tabs">
-    <div class="nav-tab active" id="tab-dashboard" onclick="showPage('dashboard')">Dashboard</div>
-    <div class="nav-tab"       id="tab-simulate"  onclick="showPage('simulate')">Simulate</div>
+  <div class="brand"><div class="brand-i">⚡</div><span class="brand-n">ZoneHeal</span></div>
+  <div class="tabs">
+    <div class="tab active" id="tab-dash" onclick="show('dash')">Dashboard</div>
+    <div class="tab" id="tab-sim" onclick="show('sim')">Simulate</div>
   </div>
-  <div class="nav-right">
-    <div class="nav-system-status">
-      <div class="status-dot" id="sysDot"></div>
-      <span id="sysTxt">Connecting…</span>
-    </div>
-    <div class="nav-updated" id="navUpdated"></div>
+  <div class="nav-r">
+    <span style="display:flex;align-items:center;gap:6px">
+      <i class="dot" id="navDot"></i><span id="navTxt">Connecting…</span>
+    </span>
+    <span id="navTime"></span>
   </div>
 </nav>
 
+<!-- ══ DASHBOARD ══════════════════════════════════════ -->
+<div class="page active" id="page-dash">
+<div class="grid">
 
-<!-- ════════════════════════════════════════════════════════════
-     PAGE 1 — Dashboard
-════════════════════════════════════════════════════════════ -->
-<div class="page active" id="page-dashboard">
-<div class="dash-grid">
-
-  <!-- ── LHS: Bedrock Chat ─────────────────────────────────── -->
-  <div class="chat-col dash-col">
-    <div class="chat-header">
-      <div class="chat-avatar">🤖</div>
+  <!-- chat -->
+  <div class="chat col">
+    <div class="chat-h">
+      <div class="chat-av">🤖</div>
       <div>
-        <div class="chat-name">AI Assistant</div>
-        <div class="chat-sub">Amazon Bedrock</div>
+        <div class="chat-n">Ask about your system</div>
+        <div class="chat-s" id="chatModel">Amazon Bedrock</div>
       </div>
-      <div class="chat-online">
-        <div class="status-dot" style="width:6px;height:6px;"></div>
-        Live
-      </div>
+      <div class="chat-live"><i class="dot" style="width:6px;height:6px"></i>Live</div>
     </div>
-
-    <div class="chat-messages" id="chatMsgs">
-      <div class="msg assistant">
-        <div class="msg-bubble">
-          Hi! I'm watching your three AWS zones in real time. Ask me anything — I'll keep it simple. 👋
-        </div>
-        <div class="msg-time">Now</div>
+    <div class="msgs" id="msgs">
+      <div class="msg ai">
+        <div class="bub">I'm watching your three zones. Ask me anything about what they're
+        doing or what it's costing — I'll keep it in plain words.</div>
+        <div class="msg-t">Now</div>
       </div>
     </div>
-
-    <div class="chat-chips">
-      <button class="chip" onclick="suggest('Is the system healthy right now?')">System healthy?</button>
-      <button class="chip" onclick="suggest('Why is traffic being rerouted?')">Why rerouting?</button>
-      <button class="chip" onclick="suggest('What does p99 latency mean in plain English?')">Explain p99</button>
-      <button class="chip" onclick="suggest('How much has cross-zone traffic cost so far?')">Cost so far?</button>
-      <button class="chip" onclick="suggest('What is the current routing mode?')">Current mode?</button>
+    <div class="chips">
+      <button class="chip" onclick="ask('Is everything alright right now?')">All alright?</button>
+      <button class="chip" onclick="ask('Why is traffic being moved between zones?')">Why move traffic?</button>
+      <button class="chip" onclick="ask('What has this cost me so far?')">What has it cost?</button>
+      <button class="chip" onclick="ask('Which zone is the slowest and by how much?')">Slowest zone?</button>
     </div>
-
-    <div class="chat-input-row">
-      <textarea class="chat-textarea" id="chatIn" placeholder="Ask about your system…" rows="2"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
-      <button class="btn btn-amber btn-icon" id="sendBtn" onclick="sendChat()" title="Send">➤</button>
+    <div class="chat-in">
+      <textarea id="chatIn" rows="2" placeholder="Ask a question…"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+      <button class="btn amber sq" id="sendBtn" onclick="sendChat()">➤</button>
     </div>
   </div>
 
-  <!-- ── CENTER: Metrics ──────────────────────────────────── -->
-  <div class="metrics-col dash-col">
-    <div class="metrics-hd">
-      <div>
-        <div class="metrics-title">System Dashboard</div>
-        <div class="metrics-sub" id="metaUpdated">Fetching…</div>
-      </div>
-      <button class="btn btn-ghost" onclick="refreshAll()" style="font-size:12px;">↺ Refresh</button>
+  <!-- main -->
+  <div class="main col">
+    <div class="hello">
+      <h1>Hello Keerthi</h1>
+      <p id="summary">Checking your zones…</p>
     </div>
 
-    <!-- SLO / mode status pills -->
-    <div class="pill-row" id="pillRow">
-      <div class="pill pill-info"><span class="pill-dot"></span>Loading…</div>
+    <div class="kpis" id="kpis"></div>
+
+    <div class="sec">
+      <h2>Your three zones</h2>
+      <span class="hint" id="zoneHint"></span>
+    </div>
+    <div class="zones" id="zones">
+      <div style="grid-column:1/-1" class="empty">Waiting for data…</div>
     </div>
 
-    <!-- Zone cards -->
-    <div class="zone-row" id="zoneRow">
-      <div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:20px;">
-        Waiting for zone data…
-      </div>
+    <div class="sec">
+      <h2>Response time, last 30 minutes</h2>
+      <div class="legend" id="legend"></div>
     </div>
-
-    <!-- p99 chart -->
-    <div class="chart-card">
-      <div class="cc-hd">
-        <div>
-          <div class="cc-title">Response Time — Last 30 minutes</div>
-          <div class="cc-sub">How long it takes for the slowest 1% of requests to complete (p99). Under 200ms is healthy.</div>
-        </div>
-        <div class="cc-legend" id="p99Legend"></div>
+    <div class="card">
+      <div class="card-s" style="margin-bottom:11px">
+        How long the slowest 1 in 100 requests take. Under <b id="sloTxt">200</b>ms keeps the promise.
       </div>
-      <canvas id="p99ChartCanvas" height="130"></canvas>
-    </div>
-
-    <!-- Cost row -->
-    <div class="cost-row">
-      <div>
-        <div class="cost-lbl">Cross-Zone Cost</div>
-        <div class="cost-desc">What rerouting traffic between zones has cost this session</div>
-      </div>
-      <div>
-        <div class="cost-val" id="costVal">₹0.0000</div>
-        <div class="cost-sub" id="bytesVal">0 GB moved</div>
-      </div>
+      <canvas id="chart" height="128"></canvas>
     </div>
   </div>
 
-  <!-- ── RHS: Risk + Alert ─────────────────────────────────── -->
-  <div class="risk-col dash-col">
-
-    <!-- Risk level -->
-    <div class="risk-box">
-      <div class="risk-box-title">System Risk Level</div>
-      <div class="risk-level-val" id="riskVal">—</div>
-      <div class="risk-bar-track">
-        <div class="risk-bar-fill" id="riskBar" style="width:0%"></div>
+  <!-- rail -->
+  <div class="rail col">
+    <div class="rbox">
+      <div class="rbox-t">What happened, in plain words</div>
+      <div id="receiptWrap">
+        <div class="empty">Nothing to report yet</div>
       </div>
-      <div class="risk-bar-labels"><span>Safe</span><span>Critical</span></div>
+      <button class="btn ghost" style="width:100%;justify-content:center;margin-top:9px;font-size:11.5px"
+        onclick="writeReceipt()" id="explainBtn">Write an explanation now</button>
     </div>
 
-    <!-- Alert lamp -->
-    <div class="risk-box">
-      <div class="risk-box-title">Spend Alert</div>
-      <div class="lamp-row">
-        <div class="lamp" id="alertLamp"></div>
-        <div class="lamp-text">
-          <strong id="lampTitle">All clear</strong>
-          <span id="lampDesc">Spend is within your limit</span>
-        </div>
+    <div class="rbox">
+      <div class="rbox-t">Spend limit</div>
+      <div style="font-size:11px;color:var(--mute);margin-bottom:9px">
+        We'll email you when moving traffic between zones costs more than this.
       </div>
-      <div class="receipt-box" id="receiptBox"></div>
+      <div class="limit">
+        <span style="color:var(--mute)">₹</span>
+        <input type="number" id="limitIn" value="1000" min="1">
+        <button class="btn amber" style="padding:6px 11px;font-size:11.5px" onclick="setLimit()">Set</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--mute);margin-top:8px" id="spentTxt"></div>
     </div>
 
-    <!-- Spend limit -->
-    <div class="risk-box">
-      <div class="risk-box-title">Spend Limit</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">
-        You'll get an alert email when cross-zone costs hit this number
-      </div>
-      <div class="spend-row">
-        <span style="font-size:12px;color:var(--text-muted)">₹</span>
-        <input class="spend-input" type="number" id="limitInput" value="1000" min="1">
-        <button class="btn btn-amber" onclick="setLimit()" style="padding:6px 10px;font-size:11.5px;">Set</button>
+    <div class="rbox">
+      <div class="rbox-t">Who decides the routing</div>
+      <div class="modes">
+        <button class="mode" id="m-policy" onclick="setMode('policy')">
+          <span>ZoneHeal</span><em>learned policy</em></button>
+        <button class="mode" id="m-rule" onclick="setMode('rule')">
+          <span>Rule-based</span><em>the incumbent</em></button>
+        <button class="mode" id="m-shadow" onclick="setMode('shadow')">
+          <span>Shadow</span><em>watches, doesn't act</em></button>
       </div>
     </div>
 
-    <!-- Routing mode -->
-    <div class="risk-box">
-      <div class="risk-box-title">Routing Mode</div>
-      <div class="mode-btn-row">
-        <button class="mode-btn" id="mode-policy" onclick="setMode('policy')">
-          <span>Z-Heal</span>
-          <span class="mode-tag">Active control</span>
-        </button>
-        <button class="mode-btn" id="mode-shadow" onclick="setMode('shadow')">
-          <span>Shadow</span>
-          <span class="mode-tag">Only Watches</span>
-        </button>
-        <button class="mode-btn" id="mode-rule" onclick="setMode('rule')">
-          <span>Rule-based</span>
-          <span class="mode-tag">Deterministic fallback</span>
-        </button>
-      </div>
+    <div class="rbox">
+      <div class="rbox-t">Recent incidents</div>
+      <div id="incidents"><div class="empty">None yet</div></div>
     </div>
-
-    <!-- Incidents -->
-    <div class="risk-box">
-      <div class="risk-box-title">Recent Incidents</div>
-      <div id="incList">
-        <div style="font-size:12px;color:var(--text-muted);text-align:center;padding:10px;">No incidents yet</div>
-      </div>
-    </div>
-
   </div>
+
 </div>
-</div><!-- /page-dashboard -->
+</div>
 
+<!-- ══ SIMULATE ═══════════════════════════════════════ -->
+<div class="page" id="page-sim">
+<div class="sim">
+  <h1>Try it on a real zone</h1>
+  <p class="lede">
+    This makes one of your Availability Zones slow — while it keeps passing every health
+    check — and lets you watch what the routing does about it. Everything here runs
+    against the live ECS tasks.
+  </p>
 
-<!-- ════════════════════════════════════════════════════════════
-     PAGE 2 — Simulate
-════════════════════════════════════════════════════════════ -->
-<div class="page" id="page-simulate">
-<div class="sim-page">
-
-  <div class="sim-hd">
-    <h1 class="sim-title">Policy Simulation</h1>
-    <p class="sim-desc">
-      Trigger a controlled fault in a live AWS Availability Zone and watch the ZoneHeal RL policy
-      detect, react, and heal — all in real time against your actual ECS tasks.
-    </p>
-  </div>
-
-  <div class="sim-controls">
-    <select class="sim-select" id="scenarioSel">
-      <option value="ap-southeast-2b">Brownout — Zone B (ap-southeast-2b)</option>
-      <option value="ap-southeast-2c">Brownout — Zone C (ap-southeast-2c)</option>
-      <option value="ap-southeast-2a">Brownout — Zone A (ap-southeast-2a)</option>
+  <div class="sim-ctl">
+    <select id="targetAZ">
+      <option value="ap-southeast-2a">Slow down Zone A (ap-southeast-2a)</option>
+      <option value="ap-southeast-2b">Slow down Zone B (ap-southeast-2b)</option>
+      <option value="ap-southeast-2c" selected>Slow down Zone C (ap-southeast-2c)</option>
     </select>
-    <button class="btn btn-amber btn-big" id="startSimBtn" onclick="startSim()">▶ Start Simulation</button>
-    <button class="btn btn-danger"        id="stopSimBtn"  onclick="stopSim()" disabled>■ Stop</button>
-    <span class="sim-timer" id="simTimer"></span>
+    <button class="btn amber lg" id="startBtn" onclick="startSim()">▶ Start</button>
+    <button class="btn red" id="stopBtn" onclick="stopSim()" disabled>■ Stop</button>
+    <span style="font-size:12px;color:var(--mute)" id="timer"></span>
   </div>
 
-  <!-- Phase tracker -->
-  <div class="phases" id="phaseBar">
-    <div class="phase" id="ph-baseline"><div class="ph-icon">1</div><div class="ph-name">Baseline</div></div>
-    <div class="phase" id="ph-fault">   <div class="ph-icon">⚡</div><div class="ph-name">Fault</div></div>
-    <div class="phase" id="ph-policy">  <div class="ph-icon">🤖</div><div class="ph-name">Policy Heals</div></div>
-    <div class="phase" id="ph-recovery"><div class="ph-icon">✓</div><div class="ph-name">Recovery</div></div>
-    <div class="phase" id="ph-complete"><div class="ph-icon">🎉</div><div class="ph-name">Complete</div></div>
+  <div class="steps" id="steps">
+    <div class="step" id="s-baseline"><i>1</i><span>Normal</span></div>
+    <div class="step" id="s-fault"><i>⚡</i><span>Zone slows</span></div>
+    <div class="step" id="s-reacting"><i>↻</i><span>Policy reacts</span></div>
+    <div class="step" id="s-recovery"><i>✓</i><span>Recovers</span></div>
+    <div class="step" id="s-complete"><i>★</i><span>Done</span></div>
   </div>
 
-  <!-- Info text -->
-  <div class="sim-info" id="simInfo"></div>
+  <div class="note" id="note"></div>
 
-  <!-- Charts -->
-  <div class="sim-grid">
-    <div class="chart-card">
-      <div class="cc-hd">
-        <div>
-          <div class="cc-title">Response Time (p99)</div>
-          <div class="cc-sub">Watch it spike when the fault hits, then recover when Z-Heal takes over</div>
-        </div>
+  <div class="sim-charts">
+    <div class="card">
+      <div class="card-t">Response time</div>
+      <div class="card-s" style="margin-bottom:11px">
+        The slow zone climbs. The others stay where they were.
       </div>
-      <canvas id="simP99Canvas" height="170"></canvas>
+      <canvas id="simChart1" height="165"></canvas>
     </div>
-    <div class="chart-card">
-      <div class="cc-hd">
-        <div>
-          <div class="cc-title">Traffic Rerouted</div>
-          <div class="cc-sub">Fraction of traffic Z-Heal is diverting away from the affected zone</div>
-        </div>
+    <div class="card">
+      <div class="card-t">Traffic moved away</div>
+      <div class="card-s" style="margin-bottom:11px">
+        How much of each zone's traffic is being sent elsewhere.
       </div>
-      <canvas id="simSpillCanvas" height="170"></canvas>
+      <canvas id="simChart2" height="165"></canvas>
     </div>
   </div>
 
-
-
-  <!-- Summary -->
-  <div class="summary" id="simSummary">
-    <div class="sum-title">✅ Simulation complete — ZoneHeal handled it</div>
-    <div class="sum-stats" id="sumStats"></div>
+  <div class="caveat">
+    Each step lasts a little over a minute, because the router works out its state once
+    per minute — the same interval the policy was trained on. The pause before traffic
+    starts moving is that interval, not a delay in noticing.
   </div>
-
 </div>
-</div><!-- /page-simulate -->
+</div>
 
-
-<!-- ════════════════════════════════════════════════════════════
-     JavaScript
-════════════════════════════════════════════════════════════ -->
 <script>
-  // ──────────────────────────────────────────────────────────
-  // Constants
-  // ──────────────────────────────────────────────────────────
-  const POLL_MS     = 10000;   // dashboard refresh
-  const SIM_POLL_MS = 3000;    // simulation refresh
+const POLL = 10000, SIM_POLL = 3000;
+const COLORS = {'ap-southeast-2a':'#f90','ap-southeast-2b':'#48cef7','ap-southeast-2c':'#9d7bea'};
+const STEPS = ['baseline','fault','reacting','recovery','complete'];
+const NOTES = {
+  baseline:'Nothing wrong yet. Watch everything stay in its own zone — that costs nothing.',
+  fault:'One zone is now slow. Its health checks are still passing, so nothing would page anyone.',
+  reacting:'The policy has noticed and is moving traffic to the zones that are responding normally.',
+  recovery:'The zone is healthy again. Traffic should settle back on its own.',
+  complete:'Done. The slow zone was found from its latency, not its health checks.',
+  error:'Something went wrong. The zone has been put back to normal.',
+};
 
-  const AZ_COLORS = {
-    'ap-southeast-2a': '#f90',
-    'ap-southeast-2b': '#48cef7',
-    'ap-southeast-2c': '#9d7bea',
-  };
+let SLO = 200;
+const col = az => COLORS[az] || '#8d9ba8';
+const name = az => az ? 'Zone ' + az.slice(-1).toUpperCase() : 'Unknown';
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const clock = d => new Date(d).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+const clockS = d => new Date(d).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
-  const PHASE_ORDER = ['baseline','fault','policy','recovery','complete'];
+function show(p){
+  document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));
+  document.getElementById('page-'+p).classList.add('active');
+  document.getElementById('tab-'+p).classList.add('active');
+}
 
-  const PHASE_COPY = {
-    idle:     '',
-    starting: 'Preparing — setting all routers to shadow mode…',
-    baseline: 'Collecting baseline data — recording normal system behaviour for 15 seconds…',
-    fault:    'Fault injected. One zone is now experiencing a brownout. Watch the p99 latency spike on the chart.',
-    policy:   'Policy active — Z-Heal is detecting the fault and rerouting traffic. Watch the spill bars rise and latency recover.',
-    recovery: 'Lifting the fault — brownout removed, restoring normal routing…',
-    complete: 'Done! The policy detected the fault, rerouted traffic, and maintained your SLO.',
-    error:    'Simulation error. The system has been restored to safe mode.',
-  };
+/* ── charts ─────────────────────────────────────────── */
+function chartOpts(){
+  return {responsive:true,animation:{duration:300},
+    plugins:{legend:{display:false},tooltip:{backgroundColor:'#1b2a3b',borderColor:'#2a3f55',
+      borderWidth:1,titleColor:'#fff',bodyColor:'#d5dbdb',padding:8}},
+    scales:{x:{ticks:{color:'#8d9ba8',font:{size:10},maxTicksLimit:8},
+        grid:{color:'rgba(42,63,85,.3)'},border:{color:'#2a3f55'}},
+      y:{ticks:{color:'#8d9ba8',font:{size:10}},grid:{color:'rgba(42,63,85,.3)'},
+        border:{color:'#2a3f55'},min:0}}};
+}
 
-  // ──────────────────────────────────────────────────────────
-  // Helpers
-  // ──────────────────────────────────────────────────────────
-  function azColor(az) { return AZ_COLORS[az] || '#8d9ba8'; }
+let chart, sim1, sim2;
+function initCharts(){
+  let o = chartOpts();
+  o.scales.y.ticks.callback = v => v + 'ms';
+  o.plugins.tooltip.callbacks = {label:c=>' '+c.dataset.label+': '+c.parsed.y.toFixed(0)+'ms'};
+  chart = new Chart(document.getElementById('chart'),{type:'line',data:{labels:[],datasets:[]},options:o});
 
-  function azLabel(az) {
-    if (!az) return 'Unknown';
-    if (az.endsWith('a')) return 'Zone A';
-    if (az.endsWith('b')) return 'Zone B';
-    if (az.endsWith('c')) return 'Zone C';
-    return az;
+  let a = chartOpts();
+  a.scales.y.ticks.callback = v => v + 'ms';
+  a.plugins.legend = {display:true,labels:{color:'#8d9ba8',font:{size:11},boxWidth:10}};
+  sim1 = new Chart(document.getElementById('simChart1'),{type:'line',data:{labels:[],datasets:[]},options:a});
+
+  let b = chartOpts();
+  b.scales.y.max = 0.6;
+  b.scales.y.ticks.callback = v => Math.round(v*100) + '%';
+  b.plugins.legend = {display:true,labels:{color:'#8d9ba8',font:{size:11},boxWidth:10}};
+  sim2 = new Chart(document.getElementById('simChart2'),{type:'bar',data:{labels:[],datasets:[]},options:b});
+}
+
+function drawHistory(h){
+  if(!chart || !h.length) return;
+  const azs = [...new Set(h.flatMap(x=>Object.keys(x.zones||{})))].sort();
+  chart.data.labels = h.map(x=>clock(x.at));
+  chart.data.datasets = azs.map(az=>({
+    label:name(az), data:h.map(x=>((x.zones||{})[az]||{}).p99||0),
+    borderColor:col(az), backgroundColor:col(az)+'18',
+    borderWidth:2, pointRadius:1.5, tension:.35, fill:false}));
+  chart.update();
+  document.getElementById('legend').innerHTML = azs.map(az=>
+    `<div class="leg"><i style="background:${col(az)}"></i>${name(az)}</div>`).join('');
+}
+
+/* ── the greeting line ──────────────────────────────── */
+function writeSummary(zones, status){
+  const list = Object.entries(zones);
+  if(!list.length) return 'Waiting for your zones to report in.';
+
+  const slow = list.filter(([,z]) => z.p99 > SLO);
+  const moving = list.filter(([,z]) => z.spill > 0);
+  const spent = status.spentRupees || 0;
+
+  if(!slow.length && !moving.length)
+    return `All three zones are responding normally and every request is staying in its own
+      zone, so you're spending <b>nothing</b> on moving traffic around.`;
+
+  if(slow.length){
+    const [az,z] = slow[0];
+    const share = moving.length ? Math.round(moving[0][1].spill*100) : 0;
+    return `<b>${name(az)}</b> is answering in <b>${Math.round(z.p99)}ms</b> instead of the
+      usual few dozen — while still passing every health check. ZoneHeal is sending
+      <b>${share}%</b> of its traffic to the zones that are responding normally, which has
+      cost <b>₹${spent.toFixed(4)}</b> so far.`;
   }
 
-  function esc(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
+  return `Traffic is being moved between zones at the moment. It has cost
+    <b>₹${spent.toFixed(4)}</b> so far.`;
+}
 
-  function fmt(d) { return new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }); }
-  function fmtSec(d) { return new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' }); }
+/* ── kpis ───────────────────────────────────────────── */
+function drawKpis(zones, status){
+  const m = status.metrics || {};
+  const worst = Math.max(0, ...Object.values(zones).map(z=>z.p99||0));
+  const goodput = m.goodputPercent;
+  const spent = status.spentRupees || 0;
+  const localShare = Object.values(zones).length
+    ? 100 - Math.round(Object.values(zones).reduce((a,z)=>a+(z.spill||0),0)
+        / Object.values(zones).length * 100)
+    : 100;
 
-  function svgGauge(pct, color) {
-    const r = 27, circ = 2 * Math.PI * r;
-    const dash = circ * Math.min(pct, 1), gap = circ - dash;
-    return `
-      <svg width="66" height="66" viewBox="0 0 66 66">
-        <circle class="g-bg"   cx="33" cy="33" r="${r}" transform="rotate(-90 33 33)"/>
-        <circle class="g-fill" cx="33" cy="33" r="${r}"
-          stroke="${color}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}"
-          transform="rotate(-90 33 33)"/>
-      </svg>
-      <div class="gauge-pct">${Math.round(pct*100)}%</div>
-    `;
-  }
+  const cards = [
+    {l:'Slowest response', v:Math.round(worst)+'<small>ms</small>',
+     s:'promise is '+SLO+'ms', cls: worst>SLO?'bad':'good'},
+    {l:'Kept the promise', v: goodput==null?'—':Math.round(goodput)+'<small>%</small>',
+     s: m.requests ? m.requests.toLocaleString()+' requests' : 'no data yet',
+     cls: goodput==null?'':goodput>99?'good':goodput>95?'warn':'bad'},
+    {l:'Stayed in its own zone', v:localShare+'<small>%</small>', s:'the rest costs money'},
+    {l:'Spent moving traffic', v:'₹'+spent.toFixed(4),
+     s:'limit ₹'+(status.limit||1000), cls: status.overLimit?'bad':''},
+  ];
 
-  // ──────────────────────────────────────────────────────────
-  // Page switching
-  // ──────────────────────────────────────────────────────────
-  function showPage(name) {
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-    document.getElementById('page-' + name).classList.add('active');
-    document.getElementById('tab-' + name).classList.add('active');
-  }
+  document.getElementById('kpis').innerHTML = cards.map(c=>`
+    <div class="kpi ${c.cls||''}">
+      <div class="kpi-l">${c.l}</div>
+      <div class="kpi-v">${c.v}</div>
+      <div class="kpi-s">${c.s}</div>
+    </div>`).join('');
+}
 
-  // ──────────────────────────────────────────────────────────
-  // Chart.js — p99 history (Dashboard)
-  // ──────────────────────────────────────────────────────────
-  let p99Chart = null;
+/* ── zone cards ─────────────────────────────────────── */
+function drawZones(zones){
+  const list = Object.entries(zones).sort(([a],[b])=>a.localeCompare(b));
+  if(!list.length) return;
 
-  function chartDefaults() {
-    return {
-      responsive: true,
-      animation: { duration: 300 },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: '#1b2a3b',
-          borderColor: '#2a3f55',
-          borderWidth: 1,
-          titleColor: '#fff',
-          bodyColor: '#d5dbdb',
-          padding: 8,
-        }
-      },
-      scales: {
-        x: {
-          ticks: { color: '#8d9ba8', font: { size: 10 }, maxTicksLimit: 8 },
-          grid: { color: 'rgba(42,63,85,.35)' },
-          border: { color: '#2a3f55' },
-        },
-        y: {
-          ticks: { color: '#8d9ba8', font: { size: 10 } },
-          grid: { color: 'rgba(42,63,85,.35)' },
-          border: { color: '#2a3f55' },
-          min: 0,
-        }
-      }
-    };
-  }
+  document.getElementById('zones').innerHTML = list.map(([az,z])=>{
+    const slow = z.p99 > SLO;
+    const spill = Math.round((z.spill||0)*100);
+    const cls = slow ? 'crit' : spill>0 ? 'warn' : 'ok';
+    const tag = slow ? ['bad','Slow but healthy'] : spill>0 ? ['warn','Helping out'] : ['ok','Fine'];
 
-  function initDashChart() {
-    const ctx = document.getElementById('p99ChartCanvas').getContext('2d');
-    const opts = chartDefaults();
-    opts.scales.y.ticks.callback = v => v + 'ms';
-    opts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(0)}ms` };
-    // SLO reference line via plugin
-    opts.plugins.annotation = {};
-    p99Chart = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: opts });
-  }
-
-  function updateDashChart(history) {
-    if (!p99Chart || !history.length) return;
-
-    const labels = history.map(h => fmt(h.timestamp));
-    const azSet  = new Set(history.flatMap(h => Object.keys(h.zones || {})));
-    const azList = [...azSet].sort();
-
-    p99Chart.data.labels   = labels;
-    p99Chart.data.datasets = azList.map(az => ({
-      label:           azLabel(az),
-      data:            history.map(h => ((h.zones||{})[az]||{}).p99 || 0),
-      borderColor:     azColor(az),
-      backgroundColor: azColor(az) + '18',
-      borderWidth:     2,
-      pointRadius:     2,
-      tension:         0.35,
-      fill:            false,
-    }));
-    p99Chart.update();
-
-    // Legend
-    document.getElementById('p99Legend').innerHTML = azList.map(az =>
-      `<div class="leg-item"><div class="leg-dot" style="background:${azColor(az)}"></div>${azLabel(az)}</div>`
-    ).join('');
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Zone cards
-  // ──────────────────────────────────────────────────────────
-  function renderZones(zones) {
-    const row = document.getElementById('zoneRow');
-    if (!Object.keys(zones).length) return;
-
-    row.innerHTML = Object.entries(zones).sort(([a],[b]) => a.localeCompare(b)).map(([az, z]) => {
-      const cls   = z.sloMissed || z.util > .9 ? 'critical' : z.spill > 0 || z.util > .6 ? 'elevated' : 'healthy';
-      const gc    = cls === 'critical' ? '#ff4d4d' : cls === 'elevated' ? '#f0ab00' : '#5fb85f';
-      const bCls  = z.spill > 0 ? 'badge-warn' : cls === 'critical' ? 'badge-err' : 'badge-ok';
-      const bTxt  = z.spill > 0 ? `Spilling ${Math.round(z.spill*100)}%` : cls === 'critical' ? 'Degraded' : 'Healthy';
-      const p99c  = z.sloMissed ? '#ff4d4d' : '#5fb85f';
-      const sp    = Math.round((z.spill||0)*100);
-
-      return `
-        <div class="zone-card state-${cls}">
-          <div class="zc-name">${azLabel(az)}</div>
-          <div class="zc-az">${az}</div>
-          <div class="gauge-wrap"><div class="gauge">${svgGauge(z.util||0, gc)}</div></div>
-          <div class="zc-stats">
-            <div class="zc-row">
-              <span class="zc-label">Utilization</span>
-              <span class="zc-val">${Math.round((z.util||0)*100)}%</span>
-            </div>
-            <div class="zc-row">
-              <span class="zc-label">p99 response</span>
-              <span class="zc-val" style="color:${p99c}">${Math.round(z.p99||0)}ms</span>
-            </div>
-            <div class="zc-row">
-              <span class="zc-label">SLO limit</span>
-              <span class="zc-val">200 ms</span>
-            </div>
-          </div>
-          <span class="zc-badge ${bCls}">${bTxt}</span>
-          ${sp > 0 ? `
-            <div style="margin-top:7px;">
-              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:3px;">
-                <span>Traffic rerouted</span><span>${sp}%</span>
-              </div>
-              <div class="spill-track"><div class="spill-fill" style="width:${sp}%"></div></div>
-            </div>` : ''}
-        </div>`;
-    }).join('');
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Status pills
-  // ──────────────────────────────────────────────────────────
-  function renderPills(cw, status) {
-    const zones  = Object.values(cw.zones||{});
-    const missed = zones.some(z => z.sloMissed);
-    const spill  = cw.anySpilling;
-    const mode   = zones[0]?.mode;
-
-    const modePillMap = { policy: ['pill-ok','Z-Heal'], shadow: ['pill-info','Shadow'], rule: ['pill-warn','Rule-based'] };
-    const [mCls, mLbl] = modePillMap[mode] || ['pill-info','—'];
-
-    document.getElementById('pillRow').innerHTML = [
-      `<div class="pill ${missed ? 'pill-bad' : 'pill-ok'}">
-         <span class="pill-dot"></span>${missed ? 'SLO Violated' : 'Within SLO'}
-       </div>`,
-      mode ? `<div class="pill ${mCls}"><span class="pill-dot"></span>${mLbl}</div>` : '',
-      spill ? `<div class="pill pill-amber"><span class="pill-dot"></span>Traffic Rerouting</div>` : '',
-      status.overLimit ? `<div class="pill pill-bad"><span class="pill-dot"></span>Over Spend Limit</div>` : '',
-    ].join('');
-
-    // Highlight active mode button
-    ['policy','shadow','rule'].forEach(m => {
-      document.getElementById('mode-'+m).classList.toggle('active', m === mode);
-    });
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Risk panel
-  // ──────────────────────────────────────────────────────────
-  const RISK_CFG = {
-    healthy:  { pct: 8,   color: '#5fb85f',  bar: '#1d8102',  dot: '#5fb85f', txt: 'Healthy'  },
-    elevated: { pct: 38,  color: '#f0ab00',  bar: '#f0ab00',  dot: '#f0ab00', txt: 'Elevated' },
-    high:     { pct: 68,  color: '#ff8c00',  bar: '#ff8c00',  dot: '#ff8c00', txt: 'High'     },
-    critical: { pct: 100, color: '#ff4d4d',  bar: '#d91515',  dot: '#ff4d4d', txt: 'Critical' },
-  };
-
-  function updateRisk(risk, status) {
-    const cfg = RISK_CFG[risk] || RISK_CFG.healthy;
-
-    // Nav dot
-    document.getElementById('sysDot').style.background = cfg.dot;
-    document.getElementById('sysTxt').textContent = cfg.txt;
-
-    // Risk bar
-    document.getElementById('riskVal').textContent  = cfg.txt;
-    document.getElementById('riskVal').className    = `risk-level-val rl-${risk}`;
-    document.getElementById('riskBar').style.width  = cfg.pct + '%';
-    document.getElementById('riskBar').style.background = cfg.bar;
-
-    // Alert lamp
-    const lamp = document.getElementById('alertLamp');
-    lamp.className = 'lamp' + (status.overLimit ? ' on' : '');
-    document.getElementById('lampTitle').textContent = status.overLimit ? '⚠ Spend Limit Reached' : 'All clear';
-    document.getElementById('lampDesc').textContent  = status.overLimit
-      ? `₹${status.spentRupees.toFixed(2)} spent — email sent`
-      : 'Spend within your limit';
-
-    const rBox = document.getElementById('receiptBox');
-    if (status.receipt?.explanation) {
-      rBox.style.display = 'block';
-      rBox.textContent   = status.receipt.explanation;
-    } else {
-      rBox.style.display = 'none';
-    }
-
-    // Incidents
-    const il = document.getElementById('incList');
-    if (status.incidents?.length) {
-      il.innerHTML = status.incidents.slice(0,4).map(inc => `
-        <div class="incident-row">
-          <div style="display:flex;justify-content:space-between;">
-            <div>
-              <div class="inc-zone">${azLabel(inc.zone)} <span style="font-size:10px;font-weight:400;color:var(--text-muted)">${inc.zone||''}</span></div>
-              <div class="inc-meta">${new Date(inc.startedAt).toLocaleString()}</div>
-            </div>
-            ${inc.rupees != null ? `<div class="inc-cost">₹${inc.rupees.toFixed(3)}</div>` : ''}
-          </div>
-        </div>`).join('');
-    } else {
-      il.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:8px;">No incidents yet</div>';
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Cost
-  // ──────────────────────────────────────────────────────────
-  function updateCost(status) {
-    document.getElementById('costVal').textContent  = `₹${status.spentRupees.toFixed(4)}`;
-    document.getElementById('bytesVal').textContent = `${(status.bytesMoved/1e9).toFixed(4)} GB moved across zones`;
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Main dashboard poll
-  // ──────────────────────────────────────────────────────────
-  async function refreshAll() {
-    try {
-      const [cwR, stR, hiR] = await Promise.all([
-        fetch('/api/cloudwatch'),
-        fetch('/api/status'),
-        fetch('/api/history'),
-      ]);
-      const cw   = await cwR.json();
-      const st   = await stR.json();
-      const hist = await hiR.json();
-
-      renderZones(cw.zones || {});
-      renderPills(cw, st);
-      updateRisk(cw.risk || 'healthy', st);
-      updateCost(st);
-      updateDashChart(hist.history || []);
-
-      const ts = new Date().toLocaleTimeString();
-      document.getElementById('metaUpdated').textContent = `Last updated: ${ts}`;
-      document.getElementById('navUpdated').textContent  = ts;
-
-    } catch (err) {
-      console.error('[poll]', err);
-      document.getElementById('metaUpdated').textContent = 'Connection error — retrying…';
-      document.getElementById('sysDot').style.background = '#ff4d4d';
-      document.getElementById('sysTxt').textContent = 'Disconnected';
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Chat
-  // ──────────────────────────────────────────────────────────
-  let chatBusy = false;
-
-  function appendMsg(role, text) {
-    const box = document.getElementById('chatMsgs');
-    const ts  = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
-    const el  = document.createElement('div');
-    el.className = 'msg ' + role;
-    el.innerHTML = `
-      <div class="msg-bubble">${esc(text).replace(/\n/g,'<br>')}</div>
-      <div class="msg-time">${ts}</div>
-    `;
-    box.appendChild(el);
-    box.scrollTop = box.scrollHeight;
-  }
-
-  function appendTyping() {
-    const box = document.getElementById('chatMsgs');
-    const el  = document.createElement('div');
-    el.id = 'typing';
-    el.className = 'msg assistant';
-    el.innerHTML = `<div class="msg-bubble" style="display:flex;gap:6px;align-items:center;">
-      <div class="spinner"></div><span style="font-size:11.5px;color:var(--text-muted)">Thinking…</span>
+    return `<div class="zone ${cls}">
+      <div class="zone-top">
+        <div><div class="zone-n">${name(az)}</div><div class="zone-az">${az}</div></div>
+        <span class="tag ${tag[0]}">${tag[1]}</span>
+      </div>
+      <div class="big ${slow?'slow':''}">${Math.round(z.p99||0)}<small>ms</small></div>
+      <div class="big-l">slowest 1 in 100 requests</div>
+      <div class="zrow"><span>How busy</span><span>${Math.round((z.util||0)*100)}%</span></div>
+      ${spill>0?`<div class="zrow" style="border:none;padding-top:6px">
+        <span>Traffic sent elsewhere</span><span>${spill}%</span></div>
+        <div class="track"><div class="fill" style="width:${spill}%"></div></div>`:''}
     </div>`;
-    box.appendChild(el);
-    box.scrollTop = box.scrollHeight;
+  }).join('');
+
+  const slowCount = list.filter(([,z])=>z.p99>SLO).length;
+  document.getElementById('zoneHint').textContent =
+    slowCount ? `${slowCount} of ${list.length} slower than the promise` : 'all within the promise';
+}
+
+/* ── rail ───────────────────────────────────────────── */
+function drawRail(status){
+  const r = status.receipt;
+  document.getElementById('receiptWrap').innerHTML = r && r.explanation
+    ? `<div class="receipt">${esc(r.explanation)}</div>
+       <div class="receipt-when">Written ${new Date(r.writtenAt).toLocaleString()}</div>`
+    : '<div class="empty">Nothing to report yet</div>';
+
+  document.getElementById('spentTxt').innerHTML =
+    `Spent so far: <b style="color:var(--txt)">₹${(status.spentRupees||0).toFixed(4)}</b>`;
+
+  const inc = status.incidents || [];
+  document.getElementById('incidents').innerHTML = inc.length
+    ? inc.slice(0,4).map(i=>`
+      <div class="inc">
+        <div>
+          <div class="inc-z">${name(i.zone)}</div>
+          <div class="inc-m">${clockS(i.startedAt)} · was ${Math.round(i.slowLatencyMs||0)}ms</div>
+        </div>
+        ${i.rupees!=null?`<div class="inc-c">₹${i.rupees.toFixed(4)}</div>`:''}
+      </div>`).join('')
+    : '<div class="empty">None yet</div>';
+}
+
+/* ── poll ───────────────────────────────────────────── */
+async function refresh(){
+  try{
+    const [zr,sr,hr] = await Promise.all([
+      fetch('/api/zones'), fetch('/api/status'), fetch('/api/history')]);
+    const zd = await zr.json(), st = await sr.json(), hd = await hr.json();
+
+    SLO = zd.sloMs || st.sloMs || 200;
+    document.getElementById('sloTxt').textContent = SLO;
+
+    const zones = zd.zones || {};
+    document.getElementById('summary').innerHTML = writeSummary(zones, st);
+    drawKpis(zones, st);
+    drawZones(zones);
+    drawRail(st);
+    drawHistory(hd.history || []);
+
+    const bad = zd.risk === 'degraded';
+    document.getElementById('navDot').style.background = bad ? '#ff4d4d' : '#5fb85f';
+    document.getElementById('navTxt').textContent = bad ? 'A zone is slow' : 'All well';
+    document.getElementById('navTime').textContent = new Date().toLocaleTimeString();
+
+    // which mode is active, if the router reports it
+    const first = Object.values(st.zones || {})[0];
+    if(first && first.mode)
+      ['policy','rule','shadow'].forEach(m =>
+        document.getElementById('m-'+m).classList.toggle('active', m===first.mode));
+
+  }catch(e){
+    console.error(e);
+    document.getElementById('summary').textContent =
+      'Can\u2019t reach the watcher right now. Retrying.';
+    document.getElementById('navDot').style.background = '#ff4d4d';
+    document.getElementById('navTxt').textContent = 'Disconnected';
   }
+}
 
-  async function sendChat() {
-    if (chatBusy) return;
-    const inp = document.getElementById('chatIn');
-    const msg = inp.value.trim();
-    if (!msg) return;
+/* ── chat ───────────────────────────────────────────── */
+let busy = false;
+function bubble(who, text){
+  const box = document.getElementById('msgs');
+  const el = document.createElement('div');
+  el.className = 'msg ' + who;
+  el.innerHTML = `<div class="bub">${esc(text).replace(/\n/g,'<br>')}</div>
+    <div class="msg-t">${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>`;
+  box.appendChild(el); box.scrollTop = box.scrollHeight;
+}
 
-    inp.value = '';
-    appendMsg('user', msg);
-    chatBusy = true;
-    document.getElementById('sendBtn').disabled = true;
-    appendTyping();
+async function sendChat(){
+  if(busy) return;
+  const el = document.getElementById('chatIn');
+  const q = el.value.trim(); if(!q) return;
+  el.value = ''; bubble('me', q);
+  busy = true; document.getElementById('sendBtn').disabled = true;
 
-    try {
-      const r  = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg }),
-      });
-      const d = await r.json();
-      document.getElementById('typing')?.remove();
-      appendMsg('assistant', d.message || d.error || 'Sorry, something went wrong.');
-    } catch {
-      document.getElementById('typing')?.remove();
-      appendMsg('assistant', 'Connection error. Is the server running?');
-    } finally {
-      chatBusy = false;
-      document.getElementById('sendBtn').disabled = false;
-    }
+  const box = document.getElementById('msgs');
+  const wait = document.createElement('div');
+  wait.className = 'msg ai'; wait.id = 'wait';
+  wait.innerHTML = `<div class="bub" style="display:flex;gap:8px;align-items:center">
+    <div class="spin"></div><span style="color:var(--mute);font-size:11.5px">Looking…</span></div>`;
+  box.appendChild(wait); box.scrollTop = box.scrollHeight;
+
+  try{
+    const r = await fetch('/api/chat',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q})});
+    const d = await r.json();
+    document.getElementById('wait')?.remove();
+    bubble('ai', d.message || d.error || 'Something went wrong.');
+  }catch{
+    document.getElementById('wait')?.remove();
+    bubble('ai','Couldn\u2019t reach the server.');
+  }finally{
+    busy = false; document.getElementById('sendBtn').disabled = false;
   }
+}
+const ask = t => { document.getElementById('chatIn').value = t; sendChat(); };
 
-  function suggest(txt) {
-    document.getElementById('chatIn').value = txt;
-    sendChat();
-  }
+/* ── controls ───────────────────────────────────────── */
+async function setLimit(){
+  const v = Number(document.getElementById('limitIn').value);
+  if(!v || v <= 0) return;
+  await fetch('/api/limit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({limit:v})});
+  refresh();
+}
 
-  // ──────────────────────────────────────────────────────────
-  // Controls
-  // ──────────────────────────────────────────────────────────
-  async function setLimit() {
-    const v = Number(document.getElementById('limitInput').value);
-    if (!v || v <= 0) return;
-    await fetch('/api/limit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ limit: v }) });
-  }
+async function setMode(m){
+  await fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode:m})});
+  ['policy','rule','shadow'].forEach(x =>
+    document.getElementById('m-'+x).classList.toggle('active', x===m));
+  setTimeout(refresh, 900);
+}
 
-  async function setMode(m) {
-    await fetch('/api/mode', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ mode: m }) });
-    setTimeout(refreshAll, 800);
-  }
+async function writeReceipt(){
+  const b = document.getElementById('explainBtn');
+  b.disabled = true; b.textContent = 'Writing…';
+  try{ await fetch('/api/explain',{method:'POST'}); await refresh(); }
+  catch{}
+  b.disabled = false; b.textContent = 'Write an explanation now';
+}
 
-  // ──────────────────────────────────────────────────────────
-  // Simulation — charts
-  // ──────────────────────────────────────────────────────────
-  let simP99Chart   = null;
-  let simSpillChart = null;
-  let simLabels     = [];
-  let simP99        = {};  // az -> [values]
-  let simSpill      = {};  // az -> [values]
+/* ── simulate ───────────────────────────────────────── */
+let simInt, timerInt, simStart, seen = 0;
+let labels = [], p99s = {}, spills = {};
 
-  function initSimCharts() {
-    const p99Opts = chartDefaults();
-    p99Opts.scales.y.ticks.callback = v => v + 'ms';
-    p99Opts.plugins.legend = { display: true, labels: { color:'#8d9ba8', font:{ size:11 }, boxWidth:10 } };
-    p99Opts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(0)}ms` };
-
-    simP99Chart = new Chart(
-      document.getElementById('simP99Canvas').getContext('2d'),
-      { type:'line', data:{ labels:[], datasets:[] }, options: p99Opts }
-    );
-
-    const spOpts = chartDefaults();
-    spOpts.scales.y.ticks.callback = v => Math.round(v*100)+'%';
-    spOpts.scales.y.max = 0.6;
-    spOpts.plugins.legend = { display: true, labels: { color:'#8d9ba8', font:{ size:11 }, boxWidth:10 } };
-    spOpts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${Math.round(c.parsed.y*100)}%` };
-
-    simSpillChart = new Chart(
-      document.getElementById('simSpillCanvas').getContext('2d'),
-      { type:'bar', data:{ labels:[], datasets:[] }, options: spOpts }
-    );
-  }
-
-  function pushSimSnapshot(snap) {
-    if (!snap?.zones) return;
-    const ts = fmtSec(snap.timestamp);
-    simLabels.push(ts);
-    if (simLabels.length > 60) simLabels.shift();
-
-    Object.entries(snap.zones).forEach(([az, z]) => {
-      if (!simP99[az])   simP99[az]   = [];
-      if (!simSpill[az]) simSpill[az] = [];
-      simP99[az].push(z.p99 || 0);
-      simSpill[az].push(z.spill || 0);
-      if (simP99[az].length   > 60) simP99[az].shift();
-      if (simSpill[az].length > 60) simSpill[az].shift();
-    });
-
-    const azList = Object.keys(simP99).sort();
-
-    simP99Chart.data.labels   = [...simLabels];
-    simP99Chart.data.datasets = azList.map(az => ({
-      label: azLabel(az), data: [...simP99[az]],
-      borderColor: azColor(az), backgroundColor: azColor(az)+'18',
-      borderWidth: 2, pointRadius: 1.5, tension: 0.3, fill: false,
-    }));
-    simP99Chart.update('none');
-
-    simSpillChart.data.labels   = [...simLabels];
-    simSpillChart.data.datasets = azList.map(az => ({
-      label: azLabel(az), data: [...simSpill[az]],
-      backgroundColor: azColor(az)+'99', borderColor: azColor(az), borderWidth: 1,
-    }));
-    simSpillChart.update('none');
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Simulation — control
-  // ──────────────────────────────────────────────────────────
-  let simPollInt  = null;
-  let simTimerInt = null;
-  let simStart    = null;
-  let lastSeenMetricsCount = 0;
-
-  function updatePhases(phase) {
-    const idx = PHASE_ORDER.indexOf(phase);
-    PHASE_ORDER.forEach((p, i) => {
-      const el = document.getElementById('ph-'+p);
-      if (!el) return;
-      el.className = 'phase' + (i < idx ? ' done' : i === idx ? ' active' : '');
-    });
-
-    const info = document.getElementById('simInfo');
-    const copy = PHASE_COPY[phase] || '';
-    if (copy) { info.className = 'sim-info visible'; info.innerHTML = copy; }
-    else       { info.className = 'sim-info'; }
-  }
-
-  async function pollSim() {
-    try {
-      const r   = await fetch('/api/simulate/status');
-      const sim = await r.json();
-
-      updatePhases(sim.phase);
-
-      // Feed any new snapshots to charts
-      if (sim.latestMetrics?.length) {
-        const newCount = sim.metricsCount;
-        if (newCount > lastSeenMetricsCount) {
-          sim.latestMetrics.forEach(pushSimSnapshot);
-          lastSeenMetricsCount = newCount;
-        }
-      }
-
-      if (sim.phase === 'complete' || sim.phase === 'idle' || sim.phase === 'error') {
-        clearSimIntervals();
-        document.getElementById('startSimBtn').disabled = false;
-        document.getElementById('stopSimBtn').disabled  = true;
-        document.getElementById('simTimer').textContent  = '';
-
-        if (sim.phase === 'complete' && sim.summary) {
-          showSummary(sim.summary);
-        }
-      }
-    } catch (err) { console.error('[simPoll]', err); }
-  }
-
-  function clearSimIntervals() {
-    if (simPollInt)  { clearInterval(simPollInt);  simPollInt  = null; }
-    if (simTimerInt) { clearInterval(simTimerInt); simTimerInt = null; }
-  }
-
-  async function startSim() {
-    const targetAZ = document.getElementById('scenarioSel').value;
-
-    // Reset charts
-    simLabels = {}; simP99 = {}; simSpill = {};
-    simLabels = [];
-    lastSeenMetricsCount = 0;
-    simP99Chart.data.labels   = []; simP99Chart.data.datasets   = []; simP99Chart.update();
-    simSpillChart.data.labels = []; simSpillChart.data.datasets = []; simSpillChart.update();
-    document.getElementById('simSummary').classList.remove('visible');
-
-    try {
-      const r = await fetch('/api/simulate/start', {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ targetAZ }),
-      });
-      const d = await r.json();
-      if (!r.ok) { alert(d.error || 'Failed to start'); return; }
-
-      document.getElementById('startSimBtn').disabled = true;
-      document.getElementById('stopSimBtn').disabled  = false;
-
-      simStart    = Date.now();
-      simTimerInt = setInterval(() => {
-        const s = Math.floor((Date.now() - simStart) / 1000);
-        document.getElementById('simTimer').textContent = `⏱ ${s}s elapsed`;
-      }, 1000);
-
-      simPollInt = setInterval(pollSim, SIM_POLL_MS);
-      pollSim(); // immediate
-    } catch (err) { alert('Error: ' + err); }
-  }
-
-  async function stopSim() {
-    clearSimIntervals();
-    await fetch('/api/simulate/stop', { method:'POST' });
-    document.getElementById('startSimBtn').disabled = false;
-    document.getElementById('stopSimBtn').disabled  = true;
-    document.getElementById('simTimer').textContent = '';
-    updatePhases('idle');
-    document.getElementById('simInfo').className = 'sim-info';
-  }
-
-  function showSummary(summary) {
-    // Compute stats from chart data
-    const allP99s = Object.values(simP99).flat();
-    const maxP99  = allP99s.length ? Math.max(...allP99s).toFixed(0) : '—';
-    const spillCount = Object.values(simSpill).flat().filter(v => v > 0).length;
-    const dur = summary.durationSeconds || '—';
-
-    document.getElementById('sumStats').innerHTML = [
-      [dur + 's', 'Total duration'],
-      [maxP99 + 'ms', 'Peak p99 during fault'],
-      [spillCount, 'Periods with active rerouting'],
-      ['✓', 'SLO restored by Z-Heal'],
-    ].map(([v, l]) => `
-      <div class="summary-stat" style="text-align:center;">
-        <div class="sum-stat-val">${v}</div>
-        <div class="sum-stat-lbl">${l}</div>
-      </div>`).join('');
-
-    document.getElementById('simSummary').classList.add('visible');
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // Init
-  // ──────────────────────────────────────────────────────────
-  document.addEventListener('DOMContentLoaded', () => {
-    initDashChart();
-    initSimCharts();
-    refreshAll();
-    setInterval(refreshAll, POLL_MS);
+function setStep(phase){
+  const i = STEPS.indexOf(phase);
+  STEPS.forEach((p,n)=>{
+    const el = document.getElementById('s-'+p);
+    el.className = 'step' + (n < i ? ' done' : n === i ? ' on' : '');
   });
+  const note = document.getElementById('note');
+  if(NOTES[phase]){ note.className = 'note on'; note.textContent = NOTES[phase]; }
+  else note.className = 'note';
+}
+
+function addPoint(snap){
+  if(!snap || !snap.zones) return;
+  labels.push(clockS(snap.at));
+  if(labels.length > 80) labels.shift();
+
+  Object.entries(snap.zones).forEach(([az,z])=>{
+    p99s[az] = p99s[az] || []; spills[az] = spills[az] || [];
+    p99s[az].push(z.p99 || 0); spills[az].push(z.spill || 0);
+    if(p99s[az].length > 80) p99s[az].shift();
+    if(spills[az].length > 80) spills[az].shift();
+  });
+
+  const azs = Object.keys(p99s).sort();
+  sim1.data.labels = [...labels];
+  sim1.data.datasets = azs.map(az=>({label:name(az),data:[...p99s[az]],
+    borderColor:col(az),backgroundColor:col(az)+'18',borderWidth:2,
+    pointRadius:1.5,tension:.3,fill:false}));
+  sim1.update('none');
+
+  sim2.data.labels = [...labels];
+  sim2.data.datasets = azs.map(az=>({label:name(az),data:[...spills[az]],
+    backgroundColor:col(az)+'99',borderColor:col(az),borderWidth:1}));
+  sim2.update('none');
+}
+
+async function pollSim(){
+  try{
+    const r = await fetch('/api/scenario/status');
+    const s = await r.json();
+    setStep(s.phase);
+
+    // pull fresh points from the dashboard history
+    const h = await (await fetch('/api/history')).json();
+    (h.history || []).slice(-3).forEach(addPoint);
+
+    if(['complete','idle','error'].includes(s.phase)){
+      clearInterval(simInt); clearInterval(timerInt);
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+      document.getElementById('timer').textContent = '';
+    }
+  }catch(e){ console.error(e); }
+}
+
+async function startSim(){
+  labels = []; p99s = {}; spills = {}; seen = 0;
+  [sim1,sim2].forEach(c=>{ c.data.labels=[]; c.data.datasets=[]; c.update(); });
+
+  const targetAZ = document.getElementById('targetAZ').value;
+  const r = await fetch('/api/scenario/start',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({targetAZ})});
+  const d = await r.json();
+  if(!r.ok){ alert(d.error || 'Could not start'); return; }
+
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+
+  simStart = Date.now();
+  timerInt = setInterval(()=>{
+    document.getElementById('timer').textContent =
+      Math.floor((Date.now()-simStart)/1000) + 's';
+  },1000);
+
+  simInt = setInterval(pollSim, SIM_POLL);
+  pollSim();
+}
+
+async function stopSim(){
+  clearInterval(simInt); clearInterval(timerInt);
+  await fetch('/api/scenario/stop',{method:'POST'});
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  document.getElementById('timer').textContent = '';
+  setStep('idle');
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  initCharts(); refresh(); setInterval(refresh, POLL);
+});
 </script>
 </body>
 </html>

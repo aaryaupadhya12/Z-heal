@@ -1,19 +1,25 @@
-// ZoneHeal watcher + dashboard server
+// ZoneHeal watcher
 //
-// Polls the routers, aggregates metrics, drives the dashboard,
-// runs simulations, chats via Bedrock, and sends SES email alerts.
+// Watches the routers, reads the real numbers out of CloudWatch,
+// runs the demo scenarios, answers questions, and mails a receipt
+// when the spend crosses the limit.
 //
-// Run:  node zone_watched.js
+//   node zone_watched.js
 //
-// Install:
-//   npm install express @aws-sdk/client-s3 @aws-sdk/client-bedrock-runtime @aws-sdk/client-ses
+//   npm install express dotenv @aws-sdk/client-s3
+//     @aws-sdk/client-cloudwatch @aws-sdk/client-bedrock-runtime
+//     @aws-sdk/client-ses
+
+require("dotenv").config();
 
 const express = require("express");
-const path    = require("path");
+const fs = require("fs");
+const path = require("path");
 
 const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
-const { BedrockRuntimeClient, InvokeModelCommand }    = require("@aws-sdk/client-bedrock-runtime");
-const { SESClient, SendEmailCommand }                  = require("@aws-sdk/client-ses");
+const { CloudWatchClient, GetMetricDataCommand } = require("@aws-sdk/client-cloudwatch");
+const { BedrockRuntimeClient, InvokeModelCommand } = require("@aws-sdk/client-bedrock-runtime");
+const { SESClient, SendEmailCommand } = require("@aws-sdk/client-ses");
 
 // ---------------------------------------------------------------
 // Config
@@ -21,728 +27,716 @@ const { SESClient, SendEmailCommand }                  = require("@aws-sdk/clien
 
 const REGION = "ap-southeast-2";
 const BUCKET = "zonerl-819168518877";
+const PORT = 3000;
 
-// All three router public IPs (one per AZ task)
-const ROUTER_IPS = [
-  "http://3.106.214.17:8000",
-  "http://3.107.157.146:8000",
-  "http://3.107.233.251:8000",
-];
+// Public IPs change every time ECS redeploys, so keep them in .env.
+// Inside the VPC this becomes http://router:8000 and never changes.
+const ROUTERS = [
+  process.env.ROUTER_1,
+  process.env.ROUTER_2,
+  process.env.ROUTER_3,
+].filter(Boolean);
 
-const USD_PER_GB    = 0.02;
+// Nova Micro: cheap, and it needs no use-case form.
+const MODEL = "apac.amazon.nova-micro-v1:0";
+
+const SLO_MS = 200;
+const USD_PER_GB = 0.02;           // $0.01 out + $0.01 in
 const RUPEES_PER_USD = 95.9355;
-const SLO_MS        = 200;     // matches router env var
-
 const POLL_SECONDS = 30;
-const PORT         = 3000;
 
-// SES – set these in your shell environment:
-//   export ALERT_FROM_EMAIL=alerts@yourdomain.com
-//   export ALERT_TO_EMAIL=founder@yourdomain.com
-const ALERT_FROM_EMAIL = process.env.ALERT_FROM_EMAIL || "alerts@example.com";
-const ALERT_TO_EMAIL   = process.env.ALERT_TO_EMAIL   || "founder@example.com";
+// Must be verified in SES, or nothing sends.
+const MAIL_FROM = process.env.ALERT_FROM_EMAIL;
+const MAIL_TO = process.env.ALERT_TO_EMAIL;
+
+const CHAT_LIMIT = 20;             // questions per hour
+const HISTORY_POINTS = 60;         // 30 minutes at 30s
 
 // ---------------------------------------------------------------
-// AWS SDK clients  (all use the ECS task-role, no keys needed)
-// ---------------------------------------------------------------
 
-const s3      = new S3Client({ region: REGION });
+const s3 = new S3Client({ region: REGION });
+const cw = new CloudWatchClient({ region: REGION });
 const bedrock = new BedrockRuntimeClient({ region: REGION });
-const ses     = new SESClient({ region: REGION });
+const ses = new SESClient({ region: REGION });
 
-// ---------------------------------------------------------------
-// Runtime state
-// ---------------------------------------------------------------
+let limitRupees = 1000;
 
-let SPEND_LIMIT = 1000;
-
-let state = {
-  zones:       {},
-  spentRupees: 0,
-  bytesMoved:  0,
-  incidents:   [],
-  mailSent:    false,
-  limit:       SPEND_LIMIT,
-  receipt:     null,
-};
-
+let zones = {};              // az -> whatever that router last said
+let history = [];            // recent snapshots, for the chart
+let incidents = [];          // finished incidents, newest first
 let openIncident = null;
+let receipt = null;
+let mailSent = false;
 
-// Time-series snapshots for the dashboard chart (last 30 minutes)
-let history = [];           // [{timestamp, zones:{az:{util,p99,spill}}, totalSpill}]
-const MAX_HISTORY = 30;
+let azToRouter = {};         // az -> router url
+let chatTimes = [];          // for the rate limit
+let chatTurns = [];          // conversation so far
 
-// Bedrock conversation history (kept in-memory, per server session)
-let chatHistory = [];
-
-// AZ discovery: filled on startup by calling /health on each router
-let routerAZMap = {};       // url  -> az  (e.g. "http://3.x.x.x:8000" -> "ap-southeast-2a")
-let azRouterMap = {};       // az   -> url
-
-// Simulation state
-let simState = {
-  running:         false,
-  phase:           "idle",   // idle | baseline | fault | policy | recovery | complete | error
-  startedAt:       null,
-  metrics:         [],       // high-frequency snapshots collected during the sim
-  baselineMetrics: null,
-  summary:         null,
-  targetAZ:        null,
-};
+let sim = { running: false, phase: "idle", targetAZ: null, startedAt: null };
 
 // ---------------------------------------------------------------
-// Utility
+// Small helpers
 // ---------------------------------------------------------------
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sum = list => list.reduce((a, b) => a + b, 0);
+const rupeesFor = bytes => (bytes / 1e9) * USD_PER_GB * RUPEES_PER_USD;
+
+async function get(url) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+  return r.json();
 }
 
-function fmtTime() {
-  return new Date().toLocaleTimeString("en-AU");
+async function post(url, params) {
+  const qs = Object.entries(params || {}).map(([k, v]) => `${k}=${v}`).join("&");
+  const r = await fetch(qs ? `${url}?${qs}` : url, {
+    method: "POST",
+    signal: AbortSignal.timeout(5000),
+  });
+  return r.json();
 }
 
 // ---------------------------------------------------------------
-// Router helpers
+// Talking to the routers
 // ---------------------------------------------------------------
 
-async function httpGet(url, timeoutMs = 3000) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  return res.json();
-}
-
-async function httpPost(url, params = {}, timeoutMs = 5000) {
-  // Build query string for the FastAPI routers (they use query params)
-  const qs = Object.entries(params).map(([k, v]) => `${k}=${v}`).join("&");
-  const fullUrl = qs ? `${url}?${qs}` : url;
-  const res = await fetch(fullUrl, { method: "POST", signal: AbortSignal.timeout(timeoutMs) });
-  return res.json();
-}
-
-// Discover which AZ each router task is in by calling /health
-async function discoverRouters() {
-  await Promise.all(ROUTER_IPS.map(async (url) => {
+async function findRouters() {
+  for (const url of ROUTERS) {
     try {
-      const data = await httpGet(url + "/health");
-      if (data.az) {
-        routerAZMap[url] = data.az;
-        azRouterMap[data.az] = url;
-        console.log(`[discovery] ${url} -> ${data.az}`);
+      const health = await get(url + "/health");
+      if (health.az) {
+        azToRouter[health.az] = url;
+        console.log(`found ${health.az} at ${url}`);
       }
-    } catch (err) {
-      console.log(`[discovery] could not reach ${url}: ${err.message || err}`);
-    }
-  }));
-}
-
-// Fetch /state from one router; returns { ok, url, ...state }
-async function askRouter(url) {
-  try {
-    const data = await httpGet(url + "/state");
-    return { ok: true, url, ...data };
-  } catch (err) {
-    return { ok: false, url, error: String(err) };
-  }
-}
-
-// Fetch routing mode from one router
-async function getRouterMode(url) {
-  try {
-    const data = await httpGet(url + "/mode");
-    return data.mode;
-  } catch {
-    return null;
-  }
-}
-
-async function setRouterMode(url, mode) {
-  try {
-    await httpPost(url + "/mode", { m: mode });
-  } catch (err) {
-    console.log(`[mode] failed on ${url}: ${err.message || err}`);
-  }
-}
-
-async function triggerBrownout(az, on) {
-  // Try every router until one of them accepts the brownout command
-  for (const url of ROUTER_IPS) {
-    try {
-      const result = await httpPost(url + "/brownout", { az, on });
-      return result;
     } catch {
-      // try next router
+      console.log(`could not reach ${url}`);
     }
   }
-  console.log(`[brownout] all routers failed for az=${az} on=${on}`);
+}
+
+async function setMode(mode) {
+  for (const url of ROUTERS) {
+    try {
+      await post(url + "/mode", { m: mode });
+    } catch {}
+  }
+}
+
+async function setBrownout(az, on) {
+  // Any router can pass the request through.
+  for (const url of ROUTERS) {
+    try {
+      return await post(url + "/brownout", { az, on });
+    } catch {}
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------
-// Polling
+// The numbers, from CloudWatch
+// ---------------------------------------------------------------
+
+async function readMetrics(minutes) {
+  const end = new Date();
+  const start = new Date(end - minutes * 60000);
+
+  const want = (id, name, stat, mode) => ({
+    Id: id,
+    MetricStat: {
+      Metric: {
+        Namespace: "ZoneRL",
+        MetricName: name,
+        Dimensions: [{ Name: "Mode", Value: mode }],
+      },
+      Period: 60,
+      Stat: stat,
+    },
+  });
+
+  const reply = await cw.send(new GetMetricDataCommand({
+    StartTime: start,
+    EndTime: end,
+    ScanBy: "TimestampAscending",
+    MetricDataQueries: [
+      want("p99", "LatencyMs", "p99", "policy"),
+      want("reqs", "Requests", "Sum", "policy"),
+      want("good", "GoodRequests", "Sum", "policy"),
+      want("bytes", "CrossAZBytes", "Sum", "policy"),
+    ],
+  }));
+
+  const series = {};
+  for (const r of reply.MetricDataResults) series[r.Id] = r.Values || [];
+
+  const requests = sum(series.reqs || []);
+  const bytes = sum(series.bytes || []);
+  const p99s = series.p99 || [];
+
+  // If the metric has no datapoints at all, nobody measured it.
+  // That is not the same as measuring zero -- saying zero here
+  // would tell the model every request failed.
+  const measuredGood = (series.good || []).length > 0;
+  const good = measuredGood ? sum(series.good) : null;
+
+  return {
+    p99Now: p99s.length ? p99s[p99s.length - 1] : null,
+    p99Worst: p99s.length ? Math.max(...p99s) : null,
+    requests,
+    good,
+    tooSlow: measuredGood ? requests - good : null,
+    goodputPercent: measuredGood && requests ? (good / requests) * 100 : null,
+    bytes,
+    rupees: rupeesFor(bytes),
+    minutes,
+  };
+}
+// The running total, so the spend limit means something.
+let spentRupees = 0;
+let bytesMoved = 0;
+let lastBytesSeen = 0;
+
+async function updateSpend() {
+  try {
+    const m = await readMetrics(5);
+
+    // Only count what is new since the last look.
+    if (m.bytes > lastBytesSeen) {
+      const fresh = m.bytes - lastBytesSeen;
+      bytesMoved += fresh;
+      spentRupees += rupeesFor(fresh);
+    }
+    lastBytesSeen = m.bytes;
+
+  } catch (err) {
+    console.log("could not read metrics: " + (err.message || err));
+  }
+}
+
+// ---------------------------------------------------------------
+// Watching
 // ---------------------------------------------------------------
 
 async function poll() {
-  const answers = await Promise.all(ROUTER_IPS.map(askRouter));
+  const snapshot = { at: new Date().toISOString(), zones: {} };
 
-  let anyoneSpilling = false;
-  let worstP99       = 0;
-  let slowZone       = null;
+  let spilling = false;
+  let slowest = 0;
+  let slowZone = null;
+  let fastest = null;
 
-  const snapshot = {
-    timestamp: new Date().toISOString(),
-    zones:     {},
-    totalSpill: 0,
-  };
+  for (const url of ROUTERS) {
+    let answer;
+    try {
+      answer = await get(url + "/state");
+    } catch {
+      continue;
+    }
 
-  for (const answer of answers) {
-    if (!answer.ok) continue;
-
-    const az    = answer.source_az;
+    const az = answer.source_az;
+    const p99 = (answer.p99 || {})[az] || 0;
+    const util = (answer.util || {})[az] || 0;
     const spill = answer.spill || 0;
-    const p99   = (answer.p99  || {})[az] || 0;
-    const util  = (answer.util || {})[az] || 0;
 
-    state.zones[az] = answer;
+    zones[az] = { ...answer, p99Own: p99, utilOwn: util };
+    snapshot.zones[az] = { p99, util, spill };
 
-    snapshot.zones[az] = { util, p99, spill };
-    snapshot.totalSpill += spill;
-
-    if (spill > 0) anyoneSpilling = true;
-
-    if (p99 > worstP99) { worstP99 = p99; slowZone = az; }
+    if (spill > 0) spilling = true;
+    if (p99 > slowest) { slowest = p99; slowZone = az; }
+    if (p99 > 0 && (fastest === null || p99 < fastest)) fastest = p99;
   }
 
-  // Store snapshot in time-series
   history.push(snapshot);
-  if (history.length > MAX_HISTORY) history.shift();
+  if (history.length > HISTORY_POINTS) history.shift();
 
-  // Incident lifecycle
-  if (anyoneSpilling && openIncident === null) {
+  await updateSpend();
+
+  // An incident is any stretch where a zone is sending traffic away.
+  if (spilling && !openIncident) {
     openIncident = {
-      startedAt:    new Date().toISOString(),
-      zone:         slowZone,
-      p99Before:    worstP99,
-      bytesAtStart: state.bytesMoved,
-      rupeesAtStart: state.spentRupees,
+      startedAt: new Date().toISOString(),
+      zone: slowZone,
+      slowLatencyMs: Math.round(slowest),
+      normalLatencyMs: Math.round(fastest || 0),
+      spillFraction: (zones[slowZone] || {}).spill || 0,
+      rupeesAtStart: spentRupees,
     };
-    console.log(`[incident] started in ${slowZone}`);
+    console.log(`incident started in ${slowZone}`);
   }
 
-  if (!anyoneSpilling && openIncident !== null) {
-    openIncident.endedAt  = new Date().toISOString();
-    openIncident.bytes    = state.bytesMoved  - openIncident.bytesAtStart;
-    openIncident.rupees   = state.spentRupees - openIncident.rupeesAtStart;
-    openIncident.p99After = worstP99;
-    state.incidents.unshift(openIncident);
-    console.log(`[incident] ended`);
+  if (!spilling && openIncident) {
+    openIncident.endedAt = new Date().toISOString();
+    openIncident.rupees = spentRupees - openIncident.rupeesAtStart;
+    incidents.unshift(openIncident);
+    console.log("incident ended");
     openIncident = null;
     await save();
   }
 
-  state.limit = SPEND_LIMIT;
-
-  // Spend-limit alert
-  if (state.spentRupees > SPEND_LIMIT && !state.mailSent) {
-    state.mailSent = true;
-    console.log(`[alert] over limit — generating explanation and sending email`);
+  if (spentRupees > limitRupees && !mailSent) {
+    mailSent = true;
+    console.log("over the limit -- writing the receipt");
     await explain();
   }
-
-  // Feed running simulation
-  if (simState.running) {
-    simState.metrics.push(snapshot);
-  }
 }
 
 // ---------------------------------------------------------------
-// Bedrock explanation (non-technical receipt)
+// Bedrock
+//
+// Every number comes from a measurement. The model turns them
+// into sentences and does no arithmetic of its own.
 // ---------------------------------------------------------------
 
-async function explain() {
-  const latest = state.incidents[0] || openIncident || {};
+function readFormat(file) {
+  try {
+    return fs.readFileSync(path.join(__dirname, file), "utf8");
+  } catch {
+    return "Explain this to someone who is not an engineer, in plain "
+         + "words, using only the numbers given.";
+  }
+}
 
-  const facts = {
-    zone:              latest.zone         || "unknown",
-    slowLatencyMs:     Math.round(latest.p99Before || 0),
-    normalLatencyMs:   25,
-    spilledFraction:   0.5,
-    bytesMoved:        Math.round(state.bytesMoved),
-    rupeesSpent:       state.spentRupees.toFixed(4),
-    limitRupees:       SPEND_LIMIT,
-    incidentCount:     state.incidents.length,
+async function askModel(prompt, systemText) {
+  const body = {
+    messages: [{ role: "user", content: [{ text: prompt }] }],
+    inferenceConfig: { maxTokens: 500 },
   };
 
-  const prompt =
-    "You are explaining a cloud routing decision to a founder who " +
-    "is not technical. Use the numbers below and add none of your " +
-    "own. Four sentences at most. Say what went wrong, what the " +
-    "system did, what it cost, and what it avoided. No jargon.\n\n" +
-    JSON.stringify(facts, null, 2);
+  if (systemText) body.system = [{ text: systemText }];
 
-  let explanationText = "Explanation unavailable.";
+  const reply = await bedrock.send(new InvokeModelCommand({
+    modelId: MODEL,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  }));
 
-  try {
-    const cmd = new InvokeModelCommand({
-      modelId:     "anthropic.claude-haiku-4-5-20251001-v1:0",
-      contentType: "application/json",
-      body: JSON.stringify({
-        anthropic_version: "bedrock-2023-05-31",
-        max_tokens: 400,
-        messages:   [{ role: "user", content: prompt }],
-      }),
-    });
+  const parsed = JSON.parse(new TextDecoder().decode(reply.body));
+  return parsed.output.message.content[0].text;
+}
 
-    const reply  = await bedrock.send(cmd);
-    const parsed = JSON.parse(new TextDecoder().decode(reply.body));
-    explanationText = parsed.content[0].text;
+async function gatherFacts() {
+  const m = await readMetrics(60).catch(() => ({}));
 
-    const receipt = {
-      writtenAt:   new Date().toISOString(),
-      facts,
-      explanation: explanationText,
+  // What is happening right now, per zone.
+  const now = {};
+  let slowestAZ = null;
+  let slowest = 0;
+  let fastest = null;
+
+  for (const az in zones) {
+    const p99 = zones[az].p99Own || 0;
+
+    now[az] = {
+      latencyMs: Math.round(p99),
+      busyPercent: Math.round((zones[az].utilOwn || 0) * 100),
+      sendingAwayPercent: Math.round((zones[az].spill || 0) * 100),
     };
-    state.receipt = receipt;
 
-    await s3.send(new PutObjectCommand({
-      Bucket:      BUCKET,
-      Key:         "receipts/latest.json",
-      Body:        JSON.stringify(receipt, null, 2),
-      ContentType: "application/json",
-    }));
-    console.log("[bedrock] receipt written to S3");
-
-  } catch (err) {
-    console.log("[bedrock] failed:", err.message || err);
-    state.receipt = { error: String(err) };
+    if (p99 > slowest) { slowest = p99; slowestAZ = az; }
+    if (p99 > 0 && (fastest === null || p99 < fastest)) fastest = p99;
   }
 
-  // Always attempt the email, even if Bedrock partially failed
-  await sendAlertEmail(facts, explanationText);
+  const live = openIncident !== null;
+
+  return {
+    // Right now. This is the only thing that is currently true.
+    somethingWrongNow: live,
+    zonesNow: now,
+    promiseMs: SLO_MS,
+
+    // The zone in trouble, only while there IS trouble.
+    slowZone: live ? slowestAZ : null,
+    slowLatencyMs: live ? Math.round(slowest) : null,
+    normalLatencyMs: fastest === null ? null : Math.round(fastest),
+    sentAwayPercent: live && slowestAZ
+      ? Math.round((zones[slowestAZ].spill || 0) * 100)
+      : 0,
+
+    // Already over. Never describe this in the present tense.
+    lastIncident: incidents[0]
+      ? {
+          zone: incidents[0].zone,
+          wasMs: Math.round(incidents[0].slowLatencyMs || 0),
+          endedAt: incidents[0].endedAt,
+        }
+      : null,
+
+    requests: Math.round(m.requests || 0),
+    requestsWithinPromise: m.good == null ? null : Math.round(m.good),
+    requestsTooSlow: m.tooSlow == null ? null : Math.round(m.tooSlow),
+
+    bytesMoved: Math.round(bytesMoved),
+    rupeesSpent: spentRupees.toFixed(4),
+    limitRupees: limitRupees,
+    incidentsSoFar: incidents.length,
+  };
+}
+async function explain() {
+  const facts = await gatherFacts();
+
+  let text = "Could not write the explanation.";
+
+  try {
+    text = await askModel(
+      readFormat("receipt-format.md")
+        + "\n\n---\n\nThe measurements:\n\n"
+        + JSON.stringify(facts, null, 2)
+    );
+  } catch (err) {
+    console.log("bedrock failed: " + (err.message || err));
+  }
+
+  receipt = { writtenAt: new Date().toISOString(), facts, explanation: text };
+
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: "receipts/latest.json",
+      Body: JSON.stringify(receipt, null, 2),
+      ContentType: "application/json",
+    }));
+  } catch (err) {
+    console.log("could not save the receipt: " + (err.message || err));
+  }
+
+  await sendMail(facts, text);
+  return receipt;
 }
 
 // ---------------------------------------------------------------
-// SES email alert
+// The mail
 // ---------------------------------------------------------------
 
-async function sendAlertEmail(facts, explanation) {
-  const subject =
-    `🚨 ZoneHeal Alert: Spend limit exceeded — ₹${Number(facts.rupeesSpent).toFixed(2)} spent`;
+function mailHtml(facts, explanation) {
+  const row = (label, value) => `
+    <tr>
+      <td style="padding:6px 0;color:#8d9ba8;font-size:13px;">${label}</td>
+      <td style="padding:6px 0;color:#fff;font-size:13px;text-align:right;">
+        <strong>${value}</strong>
+      </td>
+    </tr>`;
 
-  const htmlBody = `
-    <html><body style="font-family:Arial,sans-serif;background:#0f1b2d;color:#d5dbdb;padding:24px;">
-      <div style="max-width:560px;margin:0 auto;background:#1b2a3b;border-radius:8px;padding:24px;">
-        <h2 style="color:#f90;margin:0 0 16px;">⚡ ZoneHeal Spend Alert</h2>
-        <p style="font-size:15px;color:#fff;">
-          Your cross-zone routing cost has exceeded your limit of
-          <strong style="color:#f90;">₹${facts.limitRupees}</strong>.
-        </p>
-        <hr style="border:none;border-top:1px solid #2a3f55;margin:16px 0;">
-        <h3 style="color:#fff;margin:0 0 8px;">What happened</h3>
-        <p style="color:#d5dbdb;line-height:1.6;">${explanation}</p>
-        <hr style="border:none;border-top:1px solid #2a3f55;margin:16px 0;">
-        <table style="width:100%;border-collapse:collapse;">
-          <tr>
-            <td style="padding:6px 0;color:#8d9ba8;font-size:13px;">Zone affected</td>
-            <td style="padding:6px 0;color:#fff;font-size:13px;text-align:right;"><strong>${facts.zone}</strong></td>
-          </tr>
-          <tr>
-            <td style="padding:6px 0;color:#8d9ba8;font-size:13px;">Worst latency</td>
-            <td style="padding:6px 0;color:#fff;font-size:13px;text-align:right;"><strong>${facts.slowLatencyMs} ms</strong></td>
-          </tr>
-          <tr>
-            <td style="padding:6px 0;color:#8d9ba8;font-size:13px;">Data moved across zones</td>
-            <td style="padding:6px 0;color:#fff;font-size:13px;text-align:right;"><strong>${(facts.bytesMoved / 1e9).toFixed(3)} GB</strong></td>
-          </tr>
-          <tr>
-            <td style="padding:6px 0;color:#8d9ba8;font-size:13px;">Total cost</td>
-            <td style="padding:6px 0;color:#f90;font-size:15px;text-align:right;font-weight:700;">₹${facts.rupeesSpent}</td>
-          </tr>
-          <tr>
-            <td style="padding:6px 0;color:#8d9ba8;font-size:13px;">Incidents so far</td>
-            <td style="padding:6px 0;color:#fff;font-size:13px;text-align:right;">${facts.incidentCount}</td>
-          </tr>
-        </table>
-        <p style="color:#5a7a90;font-size:11px;margin:20px 0 0;">
-          Sent automatically by ZoneHeal monitoring · ${fmtTime()}
-        </p>
-      </div>
-    </body></html>
-  `;
+  return `
+  <html><body style="font-family:Arial,sans-serif;background:#0f1b2d;padding:24px;">
+    <div style="max-width:560px;margin:0 auto;background:#1b2a3b;border-radius:8px;padding:24px;">
+      <h2 style="color:#f90;margin:0 0 16px;">Your cross-zone spend passed ₹${facts.limitRupees}</h2>
+      <p style="color:#d5dbdb;line-height:1.6;font-size:15px;">${explanation}</p>
+      <hr style="border:none;border-top:1px solid #2a3f55;margin:16px 0;">
+      <table style="width:100%;border-collapse:collapse;">
+        ${row("Zone affected", facts.slowZone || "-")}
+        ${row("Slowest response", facts.slowLatencyMs + " ms")}
+        ${row("Normally", (facts.normalLatencyMs || "-") + " ms")}
+        ${row("Data moved between zones", (facts.bytesMoved / 1e6).toFixed(2) + " MB")}
+        ${row("Spent", "₹" + facts.rupeesSpent)}
+        ${row("Requests kept within the promise",
+              facts.requestsWithinPromise + " of " + facts.requests)}
+      </table>
+      <p style="color:#5a7a90;font-size:11px;margin:20px 0 0;">
+        Sent by ZoneHeal. Change your limit on the dashboard.
+      </p>
+    </div>
+  </body></html>`;
+}
 
-  const textBody =
-    `ZoneHeal Spend Alert\n\n` +
-    `${explanation}\n\n` +
-    `Spent: ₹${facts.rupeesSpent}  /  Limit: ₹${facts.limitRupees}\n` +
-    `Zone: ${facts.zone}  |  Peak latency: ${facts.slowLatencyMs}ms\n`;
+async function sendMail(facts, explanation) {
+  if (!MAIL_FROM || !MAIL_TO) {
+    console.log("no mail addresses set -- skipping");
+    return { sent: false, reason: "not configured" };
+  }
 
   try {
     await ses.send(new SendEmailCommand({
-      Source: ALERT_FROM_EMAIL,
-      Destination: { ToAddresses: [ALERT_TO_EMAIL] },
+      Source: MAIL_FROM,
+      Destination: { ToAddresses: [MAIL_TO] },
       Message: {
-        Subject: { Data: subject, Charset: "UTF-8" },
+        Subject: {
+          Data: `Cross-zone spend passed ₹${facts.limitRupees}`,
+          Charset: "UTF-8",
+        },
         Body: {
-          Html: { Data: htmlBody, Charset: "UTF-8" },
-          Text: { Data: textBody, Charset: "UTF-8" },
+          Html: { Data: mailHtml(facts, explanation), Charset: "UTF-8" },
+          Text: { Data: explanation, Charset: "UTF-8" },
         },
       },
     }));
-    console.log(`[ses] alert email sent to ${ALERT_TO_EMAIL}`);
+
+    console.log("mail sent to " + MAIL_TO);
+    return { sent: true };
+
   } catch (err) {
-    console.log(`[ses] failed: ${err.message || err}`);
+    // SES only sends to verified addresses until the account leaves
+    // the sandbox. Say so rather than failing silently.
+    console.log("mail failed: " + (err.message || err));
+    return { sent: false, reason: String(err.message || err) };
   }
 }
 
 // ---------------------------------------------------------------
-// S3 persistence
+// Saving
 // ---------------------------------------------------------------
 
 async function save() {
   try {
     await s3.send(new PutObjectCommand({
-      Bucket:      BUCKET,
-      Key:         "watcher/state.json",
-      Body:        JSON.stringify(state, null, 2),
+      Bucket: BUCKET,
+      Key: "watcher/state.json",
+      Body: JSON.stringify({ spentRupees, bytesMoved, incidents, mailSent, receipt }, null, 2),
       ContentType: "application/json",
     }));
-  } catch (err) {
-    console.log("[s3] save failed:", err.message || err);
-  }
+  } catch {}
 }
 
 async function load() {
   try {
-    const reply  = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: "watcher/state.json" }));
-    const text   = await reply.Body.transformToString();
-    const saved  = JSON.parse(text);
-    state.spentRupees = saved.spentRupees || 0;
-    state.bytesMoved  = saved.bytesMoved  || 0;
-    state.incidents   = saved.incidents   || [];
-    state.mailSent    = saved.mailSent    || false;
-    if (saved.receipt) state.receipt = saved.receipt;
-    console.log("[s3] loaded previous state");
+    const reply = await s3.send(new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: "watcher/state.json",
+    }));
+
+    const saved = JSON.parse(await reply.Body.transformToString());
+
+    spentRupees = saved.spentRupees || 0;
+    bytesMoved = saved.bytesMoved || 0;
+    incidents = saved.incidents || [];
+    mailSent = saved.mailSent || false;
+    receipt = saved.receipt || null;
+
+    console.log("loaded what we knew before");
   } catch {
-    console.log("[s3] starting fresh (no saved state)");
+    console.log("starting fresh");
   }
 }
 
 // ---------------------------------------------------------------
-// Simulation runner (async, fire-and-forget)
+// The demo scenarios
+//
+// The router works out its state once a minute, so every phase
+// has to be longer than a minute or it will not have noticed yet.
 // ---------------------------------------------------------------
 
-async function runSimulation(targetAZ) {
-  simState.running         = true;
-  simState.metrics         = [];
-  simState.baselineMetrics = null;
-  simState.summary         = null;
-  simState.targetAZ        = targetAZ;
-  simState.startedAt       = new Date().toISOString();
+const MINUTE = 60000;
+
+async function runScenario(targetAZ) {
+  sim = {
+    running: true,
+    phase: "baseline",
+    targetAZ,
+    startedAt: new Date().toISOString(),
+  };
 
   try {
-    // Phase 1 — Baseline: shadow mode, record normal behaviour
-    simState.phase = "baseline";
-    console.log(`[sim] phase=baseline — setting shadow mode`);
-    await Promise.all(ROUTER_IPS.map(url => setRouterMode(url, "shadow")));
+    // 1. Nothing wrong. The policy should keep everything local.
+    await setMode("policy");
+    await sleep(MINUTE);
+    if (!sim.running) return;
 
-    await sleep(15000);
-    if (!simState.running) return;
-    simState.baselineMetrics = simState.metrics.slice();
+    // 2. Break the zone. Still healthy, just slow.
+    sim.phase = "fault";
+    await setBrownout(targetAZ, true);
 
-    // Phase 2 — Fault: inject brownout on target AZ
-    simState.phase = "fault";
-    console.log(`[sim] phase=fault — brownout on ${targetAZ}`);
-    await triggerBrownout(targetAZ, true);
+    // Long enough for a fresh measurement window to close.
+    await sleep(MINUTE + 15000);
+    if (!sim.running) return;
 
-    await sleep(5000);
-    if (!simState.running) return;
+    // 3. Watch it react.
+    sim.phase = "reacting";
+    await sleep(MINUTE);
+    if (!sim.running) return;
 
-    // Phase 3 — Policy: AI takes over
-    simState.phase = "policy";
-    console.log(`[sim] phase=policy — switching all routers to policy mode`);
-    await Promise.all(ROUTER_IPS.map(url => setRouterMode(url, "policy")));
+    // 4. Fix the zone and watch it settle.
+    sim.phase = "recovery";
+    await setBrownout(targetAZ, false);
+    await sleep(MINUTE + 15000);
 
-    await sleep(60000);
-    if (!simState.running) return;
-
-    // Phase 4 — Recovery: lift fault, restore shadow
-    simState.phase = "recovery";
-    console.log(`[sim] phase=recovery — lifting brownout`);
-    await triggerBrownout(targetAZ, false);
-    await Promise.all(ROUTER_IPS.map(url => setRouterMode(url, "shadow")));
-
-    await sleep(10000);
-    if (!simState.running) return;
-
-    // Complete — build summary
-    simState.phase   = "complete";
-    simState.running = false;
-
-    const durationSeconds = Math.round(
-      (Date.now() - new Date(simState.startedAt).getTime()) / 1000
-    );
-
-    simState.summary = {
-      targetAZ,
-      durationSeconds,
-      metricsCount: simState.metrics.length,
-    };
-    console.log(`[sim] complete in ${durationSeconds}s`);
+    sim.phase = "complete";
+    sim.running = false;
 
   } catch (err) {
-    console.log(`[sim] error: ${err.message || err}`);
-    simState.phase   = "error";
-    simState.running = false;
-    // Restore safe state
-    await triggerBrownout(simState.targetAZ, false).catch(() => {});
-    await Promise.all(ROUTER_IPS.map(url => setRouterMode(url, "shadow").catch(() => {})));
+    console.log("scenario failed: " + (err.message || err));
+    sim.phase = "error";
+    sim.running = false;
+    await setBrownout(targetAZ, false).catch(() => {});
   }
 }
 
 // ---------------------------------------------------------------
-// Express app
+// The API
 // ---------------------------------------------------------------
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));
 
-// Serve dashboard
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
+// Everything the dashboard needs, in one call.
+app.get("/api/status", async (_req, res) => {
+  let metrics = null;
 
-// ── Status ─────────────────────────────────────────────────────
+  try {
+    metrics = await readMetrics(60);
+  } catch (err) {
+    console.log("metrics unavailable: " + (err.message || err));
+  }
 
-app.get("/api/status", (_req, res) => {
   res.json({
-    zones:        state.zones,
-    spentRupees:  state.spentRupees,
-    bytesMoved:   state.bytesMoved,
-    limit:        SPEND_LIMIT,
-    overLimit:    state.spentRupees > SPEND_LIMIT,
-    incidents:    state.incidents.slice(0, 5),
+    zones,
+    metrics,
+    spentRupees,
+    bytesMoved,
+    limit: limitRupees,
+    overLimit: spentRupees > limitRupees,
+    incidents: incidents.slice(0, 5),
     openIncident,
-    receipt:      state.receipt || null,
+    receipt,
+    sloMs: SLO_MS,
   });
 });
 
-// ── History (time-series for charts) ───────────────────────────
+// Just the routers' own view, for the zone cards.
+app.get("/api/zones", (_req, res) => {
+  const out = {};
+  let worst = 0;
+
+  for (const az in zones) {
+    const p99 = zones[az].p99Own || 0;
+    const util = zones[az].utilOwn || 0;
+
+    out[az] = {
+      p99,
+      util,
+      spill: zones[az].spill || 0,
+      tooSlow: p99 > SLO_MS,
+    };
+
+    if (p99 > worst) worst = p99;
+  }
+
+  res.json({
+    zones: out,
+    risk: worst > SLO_MS ? "degraded" : "healthy",
+    sloMs: SLO_MS,
+    at: new Date().toISOString(),
+  });
+});
 
 app.get("/api/history", (_req, res) => {
   res.json({ history, sloMs: SLO_MS });
 });
 
-// ── Aggregated CloudWatch snapshot ─────────────────────────────
-
-app.get("/api/cloudwatch", async (_req, res) => {
-  const answers = await Promise.all(ROUTER_IPS.map(askRouter));
-  const modes   = await Promise.all(ROUTER_IPS.map(getRouterMode));
-
-  const zones     = {};
-  let   anySpill  = false;
-
-  answers.forEach((answer, i) => {
-    if (!answer.ok) return;
-    const az    = answer.source_az;
-    const p99   = (answer.p99  || {})[az] || 0;
-    const util  = (answer.util || {})[az] || 0;
-    const spill = answer.spill || 0;
-    zones[az] = {
-      util,
-      p99,
-      spill,
-      sloMissed: p99 > SLO_MS,
-      healthy:   p99 < SLO_MS && util < 0.8,
-      mode:      modes[i] || "unknown",
-    };
-    if (spill > 0) anySpill = true;
-  });
-
-  // Compute overall risk level
-  const values  = Object.values(zones);
-  const maxP99  = values.reduce((m, z) => Math.max(m, z.p99),  0);
-  const maxUtil = values.reduce((m, z) => Math.max(m, z.util), 0);
-  let risk = "healthy";
-  if (maxUtil > 0.9 || maxP99 > SLO_MS)            risk = "critical";
-  else if (maxUtil > 0.7 || maxP99 > SLO_MS * 0.8) risk = "high";
-  else if (anySpill || maxUtil > 0.5)               risk = "elevated";
-
-  res.json({ zones, anySpilling: anySpill, risk, sloMs: SLO_MS, timestamp: new Date().toISOString() });
-});
-
-// ── Bytes / Cost ────────────────────────────────────────────────
-
-app.post("/api/bytes", (req, res) => {
-  const bytes  = req.body.bytes || 0;
-  state.bytesMoved  += bytes;
-  state.spentRupees += (bytes / 1e9) * USD_PER_GB * RUPEES_PER_USD;
-  res.json({ ok: true, spentRupees: state.spentRupees });
-});
-
-// ── Spend limit ─────────────────────────────────────────────────
-
 app.post("/api/limit", (req, res) => {
-  SPEND_LIMIT    = Number(req.body.limit) || 1000;
-  state.mailSent = false;   // new limit resets the alert flag
-  res.json({ ok: true, limit: SPEND_LIMIT });
+  limitRupees = Number(req.body.limit) || 1000;
+  mailSent = false;                  // a new limit deserves a new warning
+  res.json({ ok: true, limit: limitRupees });
 });
-
-// ── Routing mode (broadcasts to all routers) ────────────────────
 
 app.post("/api/mode", async (req, res) => {
   const mode = req.body.mode;
+
   if (!["policy", "rule", "shadow"].includes(mode)) {
-    return res.status(400).json({ error: "invalid mode — must be policy | rule | shadow" });
+    return res.status(400).json({ error: "mode must be policy, rule or shadow" });
   }
-  await Promise.all(ROUTER_IPS.map(url => setRouterMode(url, mode)));
+
+  await setMode(mode);
   res.json({ ok: true, mode });
 });
 
-// ── Brownout proxy (passes through to the right backend via a router) ──
-
 app.post("/api/brownout", async (req, res) => {
-  const { az, on } = req.body;
-  if (!az) return res.status(400).json({ error: "az required" });
+  if (!req.body.az) return res.status(400).json({ error: "which zone?" });
 
-  const result = await triggerBrownout(az, on);
+  const result = await setBrownout(req.body.az, req.body.on);
+
   if (result) return res.json(result);
-  res.status(502).json({ error: "no router answered the brownout request" });
+  res.status(502).json({ error: "no router answered" });
 });
-
-// ── Bedrock chat ────────────────────────────────────────────────
-
-app.post("/api/chat", async (req, res) => {
-  const userMessage = (req.body.message || "").trim();
-  if (!userMessage) return res.status(400).json({ error: "message required" });
-
-  // Build live context for the model
-  const latest     = history[history.length - 1];
-  const contextStr = latest
-    ? `Live system state: ${JSON.stringify(latest.zones)}. ` +
-      `Total spill this period: ${latest.totalSpill.toFixed(2)}. ` +
-      `Spend so far: ₹${state.spentRupees.toFixed(2)}.`
-    : "No live metrics available yet.";
-
-  const systemPrompt =
-    "You are ZoneHeal's AI assistant, embedded in a real-time cloud dashboard. " +
-    "You monitor three AWS Availability Zones in Sydney (ap-southeast-2). " +
-    "Your job is to explain what the system is doing to a non-technical founder in 2-3 sentences — friendly, jargon-free. " +
-    "Key terms: 'spill' = traffic rerouted to another zone; 'p99 latency' = slowest 1% of requests; " +
-    "'utilization' = how busy a zone is (0-100%); 'SLO' = the 200ms latency promise to users. " +
-    `Current system context: ${contextStr}`;
-
-  chatHistory.push({ role: "user", content: userMessage });
-  const recentHistory = chatHistory.slice(-12);  // last 6 turns each side
-
-  try {
-    const cmd = new InvokeModelCommand({
-      modelId:     "anthropic.claude-haiku-4-5-20251001-v1:0",
-      contentType: "application/json",
-      body: JSON.stringify({
-        anthropic_version: "bedrock-2023-05-31",
-        max_tokens:        350,
-        system:            systemPrompt,
-        messages:          recentHistory,
-      }),
-    });
-
-    const reply   = await bedrock.send(cmd);
-    const parsed  = JSON.parse(new TextDecoder().decode(reply.body));
-    const aiReply = parsed.content[0].text;
-
-    chatHistory.push({ role: "assistant", content: aiReply });
-    res.json({ message: aiReply });
-
-  } catch (err) {
-    console.log("[chat] bedrock error:", err.message || err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-// ── Manual explain trigger ──────────────────────────────────────
 
 app.post("/api/explain", async (_req, res) => {
-  await explain();
-  res.json(state.receipt || { error: "nothing to explain yet" });
+  res.json(await explain());
 });
 
-// ── Simulation ──────────────────────────────────────────────────
+// Her question, answered from her own numbers.
+app.post("/api/chat", async (req, res) => {
+  const question = String(req.body.message || "").trim().slice(0, 500);
 
-app.post("/api/simulate/start", async (req, res) => {
-  if (simState.running) {
-    return res.status(400).json({ error: "simulation already running" });
+  if (!question) return res.status(400).json({ error: "ask something" });
+
+  const cutoff = Date.now() - 3600000;
+  chatTimes = chatTimes.filter(t => t > cutoff);
+
+  if (chatTimes.length >= CHAT_LIMIT) {
+    return res.status(429).json({
+      error: "that is a lot of questions -- try again in a little while",
+    });
   }
 
-  // The target AZ can be passed by the client, or we fall back to the second
-  // discovered AZ (if only one is known, use that).
-  const azList   = Object.keys(azRouterMap);
-  const targetAZ = req.body.targetAZ
-    || azList[1]
-    || azList[0]
-    || "ap-southeast-2b";
+  chatTimes.push(Date.now());
 
-  // Reset state
-  simState = {
-    running:         true,
-    phase:           "baseline",
-    startedAt:       new Date().toISOString(),
-    metrics:         [],
-    baselineMetrics: null,
-    summary:         null,
-    targetAZ,
-  };
+  const facts = await gatherFacts();
 
-  // Fire async — do not await
-  runSimulation(targetAZ).catch(err => {
-    console.log("[sim] unhandled error:", err);
-    simState.phase   = "error";
-    simState.running = false;
+  const systemText =
+    readFormat("chat-format.md")
+    + "\n\nHer measurements right now:\n"
+    + JSON.stringify(facts, null, 2);
+
+  try {
+    const answer = await askModel(question, systemText);
+
+    chatTurns.push({ q: question, a: answer });
+    if (chatTurns.length > 12) chatTurns.shift();
+
+    res.json({ message: answer, questionsLeft: CHAT_LIMIT - chatTimes.length });
+
+  } catch (err) {
+    console.log("chat failed: " + (err.message || err));
+    res.status(502).json({ error: "could not answer just now" });
+  }
+});
+
+app.post("/api/scenario/start", (req, res) => {
+  if (sim.running) {
+    return res.status(400).json({ error: "one is already running" });
+  }
+
+  const known = Object.keys(azToRouter);
+  const targetAZ = req.body.targetAZ || known[0];
+
+  if (!targetAZ) {
+    return res.status(400).json({ error: "no zones found" });
+  }
+
+  runScenario(targetAZ).catch(err => {
+    console.log("scenario error: " + err);
+    sim.phase = "error";
+    sim.running = false;
   });
 
-  res.json({ ok: true, phase: simState.phase, targetAZ });
+  res.json({ ok: true, targetAZ, phase: sim.phase });
 });
 
-app.post("/api/simulate/stop", async (_req, res) => {
-  simState.running = false;
+app.post("/api/scenario/stop", async (_req, res) => {
+  sim.running = false;
 
-  // Always restore safe state
-  if (simState.targetAZ) {
-    await triggerBrownout(simState.targetAZ, false).catch(() => {});
-  }
-  await Promise.all(ROUTER_IPS.map(url => setRouterMode(url, "shadow").catch(() => {})));
+  if (sim.targetAZ) await setBrownout(sim.targetAZ, false).catch(() => {});
 
-  simState.phase = "idle";
+  await setMode("policy");           // leave it running, not idle
+  sim.phase = "idle";
+
   res.json({ ok: true });
 });
 
-app.get("/api/simulate/status", (_req, res) => {
-  res.json({
-    running:         simState.running,
-    phase:           simState.phase,
-    startedAt:       simState.startedAt,
-    targetAZ:        simState.targetAZ,
-    summary:         simState.summary,
-    // Only send the last 5 metric snapshots (client builds its own chart arrays)
-    latestMetrics:   simState.metrics.slice(-5),
-    metricsCount:    simState.metrics.length,
-    routerAZMap,
-    discoveredAZs:   Object.keys(azRouterMap),
-  });
+app.get("/api/scenario/status", (_req, res) => {
+  res.json({ ...sim, zonesFound: Object.keys(azToRouter) });
 });
 
-// ── Boot ────────────────────────────────────────────────────────
+// ---------------------------------------------------------------
 
 load().then(async () => {
-  await discoverRouters();
-
-  // Initial poll so the dashboard has data the moment it opens
+  await findRouters();
   await poll();
 
   setInterval(poll, POLL_SECONDS * 1000);
-  setInterval(save, 60 * 1000);
+  setInterval(save, MINUTE);
 
   app.listen(PORT, () => {
-    console.log(`\n  ZoneHeal dashboard → http://localhost:${PORT}`);
-    console.log(`  Watching ${ROUTER_IPS.length} router tasks`);
-    console.log(`  Alert email → ${ALERT_TO_EMAIL}\n`);
+    console.log(`\n  ZoneHeal watcher on http://localhost:${PORT}`);
+    console.log(`  Watching ${ROUTERS.length} routers`);
+    console.log(`  Mail to ${MAIL_TO || "nobody -- set ALERT_TO_EMAIL"}\n`);
   });
 });
