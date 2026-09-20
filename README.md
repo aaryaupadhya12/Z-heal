@@ -126,11 +126,9 @@ The fact that the policies are essentially tied during normal operation is impor
 
 ### The baseline
 
-The AWS baseline is not an approximation.
+We wanted the AWS comparison to come from the real algorithm rather than a description of it, so we gave an AI agent access to the Envoy repository (envoyproxy/envoy v1.28.0) and had it port the zone aware routing logic into Python. The port covers the integer scaled share calculation, both routing modes, residual capacity spilling, the early exit conditions and panic mode.
 
-We ported Envoy's zone aware routing from `envoyproxy/envoy` v1.28.0 into Python. The implementation includes the integer scaled share calculation, both routing modes, residual capacity spilling, early exit conditions and panic mode.
-
-We validated the implementation against Envoy's worked examples and a published Envoy issue.
+We reviewed the output against the worked examples in Envoy's source comments, but we have not run Envoy's own test suite against it.
 
 ---
 
