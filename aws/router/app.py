@@ -14,8 +14,7 @@ app = FastAPI()
 
 REGION = os.getenv("AWS_REGION", "ap-southeast-2")
 
-# Local testing only.
-# In ECS, the router discovers its real AZ automatically.
+
 FAKE_AZ = os.getenv("FAKE_AZ")
 
 AZ_TO_BACKEND = json.loads(
@@ -148,13 +147,6 @@ def load_policy():
     )
 
 
-# --------------------------------------------------
-# State
-#
-# The policy decides once per minute, using the minute
-# that just ended. So we collect numbers for 60 seconds,
-# then freeze them and use the frozen copy.
-# --------------------------------------------------
 
 # Numbers for the minute in progress.
 now_latencies = {}          # az -> [12.3, 15.1, ...]
@@ -593,6 +585,7 @@ def state_now():
         "source_az": SOURCE_AZ,
         "util": last_util,
         "p99": last_p99,
+        "mode": mode,
         "spill": choose_policy_action(current_state) if policy else None,
     }
 
@@ -642,9 +635,7 @@ def get_results():
         )
 
 
-# --------------------------------------------------
-# Work
-# --------------------------------------------------
+
 
 def emit_metrics(log):
     emf = {
@@ -674,6 +665,11 @@ def emit_metrics(log):
                             "Name": "Errors",
                             "Unit": "Count",
                         },
+                        {
+                            "Name" : "GoodRequests",
+                            "Unit": "Count"
+
+                        },
                     ],
                 }
             ],
@@ -683,7 +679,10 @@ def emit_metrics(log):
         "LatencyMs": log["LatencyMs"],
         "CrossAZBytes": log["CrossAZBytes"],
         "Requests": log["Requests"],
+
         "Errors": log["Errors"],
+
+        "GoodRequests": log["GoodRequests"],
     }
 
     print(json.dumps(emf), flush=True)
@@ -738,11 +737,14 @@ def work(size: int = Query(1000, ge=0)):
             "Mode": mode,
             "SourceAZ": SOURCE_AZ,
             "TargetAZ": target_az,
+
             "State": state,
             "Spill": spill,
             "LatencyMs": round(latency_ms, 3),
             "CrossAZBytes": 0,
             "Requests": 1,
+            
+            "GoodRequests": 0,
             "Errors": 1,
             "PolicyVersion": policy["version"],
         }
@@ -786,6 +788,7 @@ def work(size: int = Query(1000, ge=0)):
         "LatencyMs": round(latency_ms, 3),
         "CrossAZBytes": cross_az_bytes,
         "Requests": 1,
+        "GoodRequests": 1 if latency_ms < SLO_MS else 0,
         "Errors": 0 if response.ok else 1,
         "PolicyVersion": policy["version"],
         # Debug: which band each signal landed in.
