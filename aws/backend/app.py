@@ -50,7 +50,7 @@ def get_availability_zone():
 FAKE_AZ = get_availability_zone()
 
 BASE_MS = float(os.getenv("BASE_MS", "20"))
-EXTRA_MS = float(os.getenv("EXTRA_MS", "0"))
+EXTRA_MS = float(os.getenv("EXTRA_MS", "600"))
 
 capacity = int(os.getenv("CAPACITY", "50"))
 inflight = 0

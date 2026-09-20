@@ -11,9 +11,6 @@ from fastapi.responses import Response
 
 app = FastAPI()
 
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
 
 REGION = os.getenv("AWS_REGION", "ap-southeast-2")
 
@@ -37,10 +34,7 @@ POLICY_KEY = os.getenv("POLICY_KEY", "policy/policy.json")
 RESULTS_KEY = os.getenv("RESULTS_KEY", "results/results.json")
 
 START_MODE = os.getenv("START_MODE", "shadow")
-ALARM_NAME = os.getenv(
-    "ALARM_NAME",
-    "zonerl-p99-guardrail",
-)
+ALARM_NAME = os.getenv("ALARM_NAME", "zonerl-p99-guardrail")
 SLO_MS = float(os.getenv("SLO_MS", "200"))
 
 mode = START_MODE
@@ -49,9 +43,6 @@ policy = None
 s3 = boto3.client("s3", region_name=REGION)
 cloudwatch = boto3.client("cloudwatch", region_name=REGION)
 
-# --------------------------------------------------
-# Availability Zone
-# --------------------------------------------------
 
 def get_availability_zone():
     """
@@ -95,10 +86,6 @@ def get_availability_zone():
 SOURCE_AZ = None
 
 
-# --------------------------------------------------
-# Policy loading
-# --------------------------------------------------
-
 def load_policy():
     global policy
 
@@ -139,6 +126,15 @@ def load_policy():
                 f"{len(row)} scores, expected {len(actions)}"
             )
 
+    # The encoder below makes 45 states. If the file says anything
+    # else, it is the wrong file: refuse it instead of serving
+    # decisions from a table we do not understand.
+    if n_states != 45:
+        raise ValueError(
+            f"Invalid policy: encoder makes 45 states, "
+            f"file has {n_states}"
+        )
+
     policy = candidate
 
     print(
@@ -150,6 +146,169 @@ def load_policy():
         }),
         flush=True,
     )
+
+
+# --------------------------------------------------
+# State
+#
+# The policy decides once per minute, using the minute
+# that just ended. So we collect numbers for 60 seconds,
+# then freeze them and use the frozen copy.
+# --------------------------------------------------
+
+# Numbers for the minute in progress.
+now_latencies = {}          # az -> [12.3, 15.1, ...]
+now_counts = {}             # az -> 41
+minute_started = time.time()
+
+# The finished minute. This is what the policy reads.
+last_util = {}              # az -> 0.12
+last_p99 = {}               # az -> 380.0
+
+backend_capacity = {}       # az -> requests per second
+
+current_state = 0
+
+
+def record_request(az, latency_ms):
+    """Call this after every request comes back."""
+
+    if az not in now_latencies:
+        now_latencies[az] = []
+        now_counts[az] = 0
+
+    now_latencies[az].append(latency_ms)
+    now_counts[az] = now_counts[az] + 1
+
+
+def p99_of(numbers):
+    """The value that 99% of requests came in under."""
+
+    if len(numbers) == 0:
+        return 0.0
+
+    ordered = sorted(numbers)
+    position = int(len(ordered) * 0.99)
+
+    if position >= len(ordered):
+        position = len(ordered) - 1
+
+    return ordered[position]
+
+
+def which_band(value, edges):
+    """Turn a number into a band number: 0, 1, 2 ..."""
+
+    band = 0
+
+    for edge in edges:
+        if value >= edge:
+            band = band + 1
+
+    return band
+
+
+def get_capacity(az):
+    """Ask a backend how many requests per second it can take."""
+
+    try:
+        reply = requests.get(
+            get_backend_url(az) + "/stats",
+            timeout=1,
+        )
+        return float(reply.json()["capacity"])
+
+    except Exception:
+        # If we cannot ask, use whatever we knew before.
+        return backend_capacity.get(az, 50.0)
+
+
+def finish_the_minute():
+    """Freeze the last 60 seconds and work out the new state."""
+
+    global minute_started, current_state
+
+    seconds = time.time() - minute_started
+
+    if seconds < 1.0:
+        seconds = 1.0
+
+    for az in AZ_TO_BACKEND:
+        latencies = now_latencies.get(az, [])
+        count = now_counts.get(az, 0)
+
+        capacity = get_capacity(az)
+        backend_capacity[az] = capacity
+
+        # util = requests arriving per second, out of how many
+        # it can take. The environment caps this at 0.99.
+        util = (count / seconds) / capacity
+
+        if util > 0.99:
+            util = 0.99
+
+        last_util[az] = util
+        last_p99[az] = p99_of(latencies)
+
+    now_latencies.clear()
+    now_counts.clear()
+    minute_started = time.time()
+
+    current_state = work_out_state()
+
+    print(
+        json.dumps({
+            "event": "minute_closed",
+            "state": current_state,
+            "util": last_util,
+            "p99": last_p99,
+        }),
+        flush=True,
+    )
+
+
+def work_out_state():
+    """Turn the three measurements into one number from 0 to 44."""
+
+    edges = policy["edges"]
+
+    # 1. How busy am I?
+    my_util = last_util.get(SOURCE_AZ, 0.0)
+    busy_band = which_band(my_util, edges["util"])
+
+    # 2. Was I slow last minute?
+    my_p99 = last_p99.get(SOURCE_AZ, 0.0)
+    slow_band = which_band(my_p99 / SLO_MS, edges["latency"])
+
+    # 3. Do the other zones have room?
+    total_free = 0.0
+    how_many = 0
+
+    for az in AZ_TO_BACKEND:
+        if az != SOURCE_AZ:
+            total_free = total_free + (1.0 - last_util.get(az, 0.0))
+            how_many = how_many + 1
+
+    if how_many == 0:
+        spare = 0.0
+    else:
+        spare = total_free / how_many
+
+    spare_band = which_band(spare, edges["spare"])
+
+    # Rows are busyness. Each row holds 3 latency bands x 3 spare
+    # bands = 9 cells. Checked against the table: state 2 gives
+    # 0.1 spill, states 7 and 8 give 0.5 spill.
+    return (busy_band * 9) + (slow_band * 3) + spare_band
+
+
+def get_state():
+    """Called on every request. Recalculates once a minute."""
+
+    if time.time() - minute_started >= 60.0:
+        finish_the_minute()
+
+    return current_state
 
 
 # --------------------------------------------------
@@ -182,25 +341,65 @@ def choose_rule_action():
 
 
 # --------------------------------------------------
-# Convert spill fraction into target AZ
+# Where to send it
 # --------------------------------------------------
 
 def choose_target_az(spill_fraction: float):
+    """Pick where this request goes."""
+
+    # Most requests stay at home.
     if spill_fraction <= 0:
         return SOURCE_AZ
 
     if random.random() >= spill_fraction:
         return SOURCE_AZ
 
-    other_azs = [
-        az for az in AZ_TO_BACKEND
-        if az != SOURCE_AZ
-    ]
+    other_zones = []
+    scores = []
 
-    if not other_azs:
+    for az in AZ_TO_BACKEND:
+        if az == SOURCE_AZ:
+            continue
+
+        free = 1.0 - last_util.get(az, 0.0)
+
+        if free < 0.0:
+            free = 0.0
+
+        p99 = last_p99.get(az, 0.0)
+
+        if p99 <= 0.0:
+            # Not measured yet. Do not assume it is fast.
+            p99 = SLO_MS
+
+        # Empty AND fast is good. Empty but slow is not.
+        # Dividing by p99 is what stops us sending traffic into
+        # the broken zone, which is idle because it is broken.
+        other_zones.append(az)
+        scores.append(free / p99)
+
+    if len(other_zones) == 0:
         return SOURCE_AZ
 
-    return random.choice(other_azs)
+    total = 0.0
+
+    for s in scores:
+        total = total + s
+
+    if total <= 0.0:
+        return SOURCE_AZ
+
+    # Pick one, with better zones more likely.
+    pick = random.random() * total
+    running = 0.0
+
+    for i in range(len(other_zones)):
+        running = running + scores[i]
+
+        if pick <= running:
+            return other_zones[i]
+
+    return other_zones[-1]
 
 
 # --------------------------------------------------
@@ -384,6 +583,51 @@ def reload_policy():
 
 
 # --------------------------------------------------
+# State, for the dashboard and for debugging
+# --------------------------------------------------
+
+@app.get("/state")
+def state_now():
+    return {
+        "state": current_state,
+        "source_az": SOURCE_AZ,
+        "util": last_util,
+        "p99": last_p99,
+        "spill": choose_policy_action(current_state) if policy else None,
+    }
+
+
+# --------------------------------------------------
+# Turn the brownout on and off
+#
+# The backends are not reachable from outside the VPC,
+# so the router passes the request through.
+# --------------------------------------------------
+
+@app.post("/brownout")
+def brownout(az: str = Query(...), on: bool = Query(...)):
+    if az not in AZ_TO_BACKEND:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown az: {az}",
+        )
+
+    try:
+        reply = requests.post(
+            get_backend_url(az) + "/slow",
+            params={"on": on},
+            timeout=5,
+        )
+        return reply.json()
+
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=502,
+            detail=str(e),
+        )
+
+
+# --------------------------------------------------
 # Results
 # --------------------------------------------------
 
@@ -444,11 +688,10 @@ def emit_metrics(log):
 
     print(json.dumps(emf), flush=True)
 
+
 @app.get("/work")
 def work(size: int = Query(1000, ge=0)):
-    # Temporary stub state.
-    # encoder.py will replace this later.
-    state = 0
+    state = get_state()
 
     policy_spill = choose_policy_action(state)
     rule_spill = choose_rule_action()
@@ -525,6 +768,8 @@ def work(size: int = Query(1000, ge=0)):
         time.perf_counter() - start
     ) * 1000
 
+    record_request(target_az, latency_ms)
+
     cross_az_bytes = 0
 
     if target_az != SOURCE_AZ:
@@ -543,6 +788,9 @@ def work(size: int = Query(1000, ge=0)):
         "Requests": 1,
         "Errors": 0 if response.ok else 1,
         "PolicyVersion": policy["version"],
+        # Debug: which band each signal landed in.
+        "Util": round(last_util.get(SOURCE_AZ, 0.0), 4),
+        "P99Ratio": round(last_p99.get(SOURCE_AZ, 0.0) / SLO_MS, 4),
     }
 
     if shadow_spill is not None:
