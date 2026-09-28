@@ -274,11 +274,3 @@ AI coding tools used: Claude and GitHub Copilot. Usage is attributed per commit.
 **Feature under study:** Amazon ECS Service Connect zone aware routing
 
 ---
-
-## Team
-
-**Aarya Upadhya**
-RL environment and policy, Envoy port, router state encoder and spill logic, CloudWatch metrics, watcher and Bedrock/SES path
-
-**Anshull M Udyavar**
-Dashboard, AWS infrastructure and deployment, CloudWatch dashboard and guardrail wiring, load generation
