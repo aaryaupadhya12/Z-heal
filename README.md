@@ -4,25 +4,6 @@ A routing policy that can detect when a zone is slow but still healthy, then exp
 
 **Live:** http://54.79.89.181:3000/
 **Repo:** https://github.com/aaryaupadhya12/Z-heal
-
-Built for First Commit, AWS × WeMakeDevs, 17–20 September 2026.
-
----
-
-## The problem
-
-Say you sell sweets and pickles online from India. Your customers are mostly Indians abroad, especially in the US and Australia. Your application runs across multiple Availability Zones.
-
-Then Diwali arrives. Traffic increases several times over and one zone starts getting slow.
-
-It is not down. Health checks are still green. Endpoint counts are still balanced. From the console, everything looks fine.
-
-But customers in that zone are waiting several seconds for pages to load, and some leave.
-
-You did not build the infrastructure yourself. A consultancy set it up and now only handles maintenance. If something goes wrong at 3am, there is nobody to call. Later, you still have to understand what happened and why the bill changed.
-
-ZoneHeal watches latency instead of just endpoint counts. When a zone becomes slow, it moves some traffic away and explains what happened, what it cost, and why it made that decision.
-
 ---
 
 ## What AWS already does
