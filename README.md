@@ -209,29 +209,6 @@ The dashboard also has a chat box that is limited to the user's metrics. A user 
 `aws/README.md` contains the complete deployment and demo sequence.
 
 ---
-
-## What we learned
-
-**Free capacity alone was not enough.**
-
-A broken zone becomes slow and therefore looks less busy. A policy based only on free capacity can actually send more traffic into the broken zone.
-
-Using free capacity together with recent p99 fixed this.
-
-**The router was in shadow mode for two days without us noticing.**
-
-Shadow mode lets the rule act and only logs what the policy would have done. So the policy computed the correct action every minute and discarded it. Cross zone bytes stayed at zero and nothing errored. We assumed the routing logic was broken and debugged everything downstream of it first.
-
-**The policy loader checked shape but not identity.**
-
-A 216 state placeholder file containing random numbers passed every validation, because 216 matched its own table length. The router would have served decisions from noise without any error. It now refuses any file that is not 45 states.
-
-**Change detection needs a stable comparison window.**
-
-When every training iteration used a different random window, the detector produced 43 false alarms before a failure was injected. Keeping the window fixed removed those false alarms.
-
----
-
 ## Limitations
 
 There are several limitations to the current evaluation.
@@ -243,25 +220,6 @@ There are several limitations to the current evaluation.
 - The cost numbers are tiny at demo scale. The measurement pipeline is end to end, but the traffic volume is not production scale.
 - The latency model uses a single server queue approximation with p99 estimated as 4.6 × mean.
 - Overload occurs in roughly 3% of minutes in the dataset, so routing decisions only matter during a small part of the workload.
-
----
-
-## Prior work
-
-The reinforcement learning harness in `Harness/` existed before the hackathon. It was originally built as a learning exercise around FrozenLake and Taxi v3 and is included as a dependency for the training code.
-
-The work completed during the event includes:
-
-- Routing environment
-- State encoding and reward
-- Envoy baseline port
-- AWS deployment
-- Live router state encoder and spill logic
-- Observability and guardrail system
-- Watcher
-- Dashboard
-
-AI coding tools used: Claude and GitHub Copilot. Usage is attributed per commit.
 
 ---
 
